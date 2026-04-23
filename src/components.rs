@@ -32,6 +32,7 @@ use dm_spine_runtime::render::SkeletonRenderer;
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 use crate::asset::SpineSkeletonAsset;
+use crate::material::SpineMaterial;
 
 /// Per-instance Spine skeleton. Owns a [`Handle<SpineSkeletonAsset>`] plus
 /// lazily-constructed runtime state ([`Skeleton`] + [`AnimationState`] +
@@ -72,6 +73,13 @@ pub struct SpineSkeletonState {
     /// Reusable per-frame event buffer. Cleared and refilled each tick;
     /// drained into Bevy events by [`crate::systems::drain_spine_events`].
     pub events: Vec<Event>,
+    /// One entry per slot in the render-command stream. Sized up lazily as
+    /// the frame-to-frame command count grows; shrinks are hidden rather
+    /// than despawned so subsequent growth reuses the same child entities.
+    /// Populated by [`crate::mesh::build_spine_meshes`].
+    pub meshes: Vec<Handle<Mesh>>,
+    pub materials: Vec<Handle<SpineMaterial>>,
+    pub children: Vec<Entity>,
 }
 
 /// Deferred animation request. Stored on [`SpineSkeleton::pending_animation`]

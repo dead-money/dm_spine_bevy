@@ -34,9 +34,12 @@
 
 use bevy::asset::AssetApp;
 use bevy::prelude::*;
+use bevy::sprite_render::Material2dPlugin;
 
 pub mod asset;
 pub mod components;
+pub mod material;
+pub mod mesh;
 pub mod systems;
 
 pub use asset::{
@@ -44,6 +47,8 @@ pub use asset::{
     SpineSkeletonLoader, SpineSkeletonLoaderError, SpineSkeletonLoaderSettings,
 };
 pub use components::{PendingAnimation, SpineSkeleton, SpineSkeletonState};
+pub use material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterialKey};
+pub use mesh::build_spine_meshes;
 pub use systems::{
     SpineKeyframeEvent, SpineSet, SpineStateEvent, drain_spine_events,
     initialize_spine_skeletons, tick_spine_skeletons,
@@ -54,10 +59,13 @@ pub struct SpinePlugin;
 
 impl Plugin for SpinePlugin {
     fn build(&self, app: &mut App) {
+        material::spine_material::register_spine_shader(app);
+
         app.init_asset::<SpineAtlasAsset>()
             .init_asset::<SpineSkeletonAsset>()
             .init_asset_loader::<SpineAtlasLoader>()
             .init_asset_loader::<SpineSkeletonLoader>()
+            .add_plugins(Material2dPlugin::<SpineMaterial>::default())
             .add_message::<SpineStateEvent>()
             .add_message::<SpineKeyframeEvent>()
             .configure_sets(
@@ -75,6 +83,7 @@ impl Plugin for SpinePlugin {
                 (
                     initialize_spine_skeletons.in_set(SpineSet::Init),
                     tick_spine_skeletons.in_set(SpineSet::Tick),
+                    build_spine_meshes.in_set(SpineSet::BuildMeshes),
                     drain_spine_events.in_set(SpineSet::Events),
                 ),
             );

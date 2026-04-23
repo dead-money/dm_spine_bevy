@@ -102,6 +102,9 @@ pub fn initialize_spine_skeletons(
             animation_state,
             renderer: SkeletonRenderer::new(),
             events: Vec::new(),
+            meshes: Vec::new(),
+            materials: Vec::new(),
+            children: Vec::new(),
         });
     }
 }
