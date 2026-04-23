@@ -36,10 +36,17 @@ use bevy::asset::AssetApp;
 use bevy::prelude::*;
 
 pub mod asset;
+pub mod components;
+pub mod systems;
 
 pub use asset::{
     SpineAtlasAsset, SpineAtlasLoader, SpineAtlasLoaderError, SpineSkeletonAsset,
     SpineSkeletonLoader, SpineSkeletonLoaderError, SpineSkeletonLoaderSettings,
+};
+pub use components::{PendingAnimation, SpineSkeleton, SpineSkeletonState};
+pub use systems::{
+    SpineKeyframeEvent, SpineSet, SpineStateEvent, drain_spine_events,
+    initialize_spine_skeletons, tick_spine_skeletons,
 };
 
 #[derive(Default)]
@@ -50,6 +57,26 @@ impl Plugin for SpinePlugin {
         app.init_asset::<SpineAtlasAsset>()
             .init_asset::<SpineSkeletonAsset>()
             .init_asset_loader::<SpineAtlasLoader>()
-            .init_asset_loader::<SpineSkeletonLoader>();
+            .init_asset_loader::<SpineSkeletonLoader>()
+            .add_message::<SpineStateEvent>()
+            .add_message::<SpineKeyframeEvent>()
+            .configure_sets(
+                Update,
+                (
+                    SpineSet::Init,
+                    SpineSet::Tick,
+                    SpineSet::BuildMeshes,
+                    SpineSet::Events,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    initialize_spine_skeletons.in_set(SpineSet::Init),
+                    tick_spine_skeletons.in_set(SpineSet::Tick),
+                    drain_spine_events.in_set(SpineSet::Events),
+                ),
+            );
     }
 }
