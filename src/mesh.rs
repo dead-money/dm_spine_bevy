@@ -152,10 +152,11 @@ fn grow_child_buffers(
 }
 
 fn empty_mesh() -> Mesh {
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    )
+    // We mutate these meshes every frame via Assets::get_mut, so they must
+    // stay resident in the main world. `RENDER_WORLD` alone causes the
+    // mesh to be extracted and dropped from the main world after frame 1,
+    // which trips `Mesh::insert_attribute` next frame.
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
 }
 
 /// Convert a [`RenderCommand`]'s interleaved position/uv buffers + index
