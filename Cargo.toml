@@ -1,0 +1,15 @@
+[package]
+name = "dm_spine_bevy"
+version = "0.1.0"
+edition = "2024"
+description = "Bevy 0.18 integration for dm_spine_runtime."
+license-file = "LICENSE"
+
+[dependencies]
+bevy = "0.18.1"
+dm_spine_runtime = { path = "../dm_spine_runtime" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
