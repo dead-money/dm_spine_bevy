@@ -26,11 +26,35 @@ jobs:
 
       # Path-dep on dm_spine_runtime as a sibling clone; matches the
       # workspace layout documented in dm_spine_bevy/Cargo.toml.
+      #
+      # On pull requests we try the matching-branch-name heuristic first
+      # so a coordinated pair of PRs (same branch name on both repos)
+      # can go green together. Falls back to the runtime's default branch
+      # (main) when no matching branch exists upstream.
+      - name: Resolve dm_spine_runtime ref
+        id: runtime_ref
+        run: |
+          branch="${{ github.head_ref }}"
+          if [ -z "$branch" ]; then
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads \
+              https://github.com/dead-money/dm_spine_runtime.git \
+              "$branch" >/dev/null 2>&1; then
+            echo "Using matching branch $branch on dm_spine_runtime"
+            echo "ref=$branch" >> "$GITHUB_OUTPUT"
+          else
+            echo "No matching branch on dm_spine_runtime; using default"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout dm_spine_runtime
         uses: actions/checkout@v6
         with:
           repository: dead-money/dm_spine_runtime
           path: dm_spine_runtime
+          ref: ${{ steps.runtime_ref.outputs.ref }}
 
       # spine-runtimes is needed by examples + by the runtime crate's
       # render_smoke test (which runs as part of `cargo test` on the
