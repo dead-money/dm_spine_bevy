@@ -97,6 +97,14 @@ pub fn initialize_spine_skeletons(
             );
         }
 
+        if let Some(skin) = sk.pending_skin.take() {
+            if let Err(err) = skeleton.set_skin_by_name(&skin) {
+                warn!("dm_spine_bevy: pending skin {skin:?} failed: {err:?}");
+            } else {
+                skeleton.set_slots_to_setup_pose();
+            }
+        }
+
         sk.state = Some(SpineSkeletonState {
             skeleton,
             animation_state,

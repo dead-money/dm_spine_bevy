@@ -29,7 +29,7 @@ use bevy::prelude::*;
 
 use dm_spine_runtime::animation::{AnimationState, Event};
 use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use dm_spine_runtime::skeleton::{Physics, Skeleton, SkinNotFound};
 
 use crate::asset::SpineSkeletonAsset;
 use crate::material::SpineMaterial;
@@ -63,6 +63,10 @@ pub struct SpineSkeleton {
     /// Overwritten on every successful init. Use [`SpineSkeleton::play`] for
     /// post-init playback.
     pub pending_animation: Option<PendingAnimation>,
+    /// Skin to activate once the asset finishes loading. Applied after the
+    /// pending animation, before the first tick. Use [`SpineSkeleton::set_skin`]
+    /// for post-init skin changes.
+    pub pending_skin: Option<String>,
 }
 
 /// Runtime state owned by a [`SpineSkeleton`] once its asset has loaded.
@@ -104,6 +108,7 @@ impl SpineSkeleton {
             physics: Physics::Update,
             paused: false,
             pending_animation: None,
+            pending_skin: None,
         }
     }
 
@@ -173,5 +178,53 @@ impl SpineSkeleton {
     /// between ticks (constraint overrides, bone-follow gameplay code, etc.).
     pub fn skeleton_mut(&mut self) -> Option<&mut Skeleton> {
         self.state.as_mut().map(|s| &mut s.skeleton)
+    }
+
+    /// Builder-style setter: queue `name` to be activated as the skeleton's
+    /// skin once the asset finishes loading. Use [`SpineSkeleton::set_skin`]
+    /// for post-init changes.
+    #[must_use]
+    pub fn with_initial_skin(mut self, name: impl Into<String>) -> Self {
+        self.pending_skin = Some(name.into());
+        self
+    }
+
+    /// Activate skin `name`. If the asset has loaded, dispatches immediately
+    /// via [`Skeleton::set_skin_by_name`] and re-resolves slot attachments
+    /// against the new skin. Otherwise queues the request, overwriting any
+    /// prior pending skin.
+    ///
+    /// # Errors
+    /// Returns [`SkinNotFound`] if the skin name is unknown to the loaded
+    /// asset. When queuing (asset not yet loaded), returns `Ok(())` — the
+    /// request might still fail at init time, in which case it's logged and
+    /// swallowed.
+    pub fn set_skin(&mut self, name: impl Into<String>) -> Result<(), SkinNotFound> {
+        let name = name.into();
+        if let Some(state) = self.state.as_mut() {
+            state.skeleton.set_skin_by_name(&name)?;
+            state.skeleton.set_slots_to_setup_pose();
+            Ok(())
+        } else {
+            self.pending_skin = Some(name);
+            Ok(())
+        }
+    }
+
+    /// Names of every animation declared by the loaded `SkeletonData`.
+    /// Returns `None` while the asset is still loading.
+    #[must_use]
+    pub fn available_animations(&self) -> Option<Vec<&str>> {
+        let skel = self.skeleton()?;
+        Some(skel.data().animations.iter().map(|a| a.name.as_str()).collect())
+    }
+
+    /// Names of every skin declared by the loaded `SkeletonData`. The
+    /// implicit `default` skin is always present at index 0.
+    /// Returns `None` while the asset is still loading.
+    #[must_use]
+    pub fn available_skins(&self) -> Option<Vec<&str>> {
+        let skel = self.skeleton()?;
+        Some(skel.data().skins.iter().map(|s| s.name.as_str()).collect())
     }
 }
