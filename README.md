@@ -22,7 +22,7 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 ## Compatibility
 
 - **Bevy 0.18.x.** Pinned to a specific Bevy version because the rendering pipeline ties into `Material2d` specialization and the `Mesh2d` extraction model, both of which evolve across releases.
-- **Spine 4.2** binary `.skel` + `.atlas` exports. JSON skeletons are not supported.
+- **Spine 4.2** exports in either binary `.skel` or JSON `.json` format, paired with a `.atlas`.
 
 ## What's in the box
 
@@ -41,7 +41,6 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 ## What's explicitly out of scope
 
 - **Straight-alpha atlases.** The shipped material assumes PMA. See [Atlas expectations](#atlas-expectations) below for the two workarounds; auto-detect is a planned follow-up.
-- **JSON skeleton files.** Use binary `.skel` exports.
 - **3D Spine.** Bevy `Mesh2d`, sprite-render pipeline only.
 - **Pre-built UI / inspector.** Direct ECS access; no editor.
 
@@ -73,7 +72,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     // load_with_settings lets you override the atlas path. Without it,
     // the loader derives the atlas filename from the skeleton stem
-    // (stripping -pro / -ess / -ios suffixes).
+    // (stripping -pro / -ess / -ios suffixes). Both `.skel` (binary) and
+    // `.json` extensions are routed to the right parser automatically —
+    // swap the extension and use `SpineSkeletonJsonLoaderSettings` for
+    // JSON exports.
     let skel: Handle<SpineSkeletonAsset> = asset_server.load_with_settings(
         "spineboy/export/spineboy-pro.skel",
         |s: &mut SpineSkeletonLoaderSettings| {
