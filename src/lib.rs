@@ -25,12 +25,60 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Bevy 0.18 integration for `dm_spine_runtime`. See `PHASE_7_PLAN.md` in the
-//! runtime crate for the full architecture.
+//! Bevy 0.18 integration for [`dm_spine_runtime`].
 //!
-//! Add [`SpinePlugin`] to your `App` to register asset loaders for `.atlas`
-//! and `.skel` files. Later sub-phases will add components, tick systems, and
-//! a PMA-aware `Material2d`.
+//! # Quick start
+//!
+//! ```no_run
+//! use bevy::prelude::*;
+//! use dm_spine_bevy::{SpinePlugin, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
+//!
+//! fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+//!     commands.spawn(Camera2d);
+//!     let skel: Handle<SpineSkeletonAsset> = asset_server.load_with_settings(
+//!         "spineboy/export/spineboy-pro.skel",
+//!         |s: &mut SpineSkeletonLoaderSettings| {
+//!             s.atlas_path = Some("spineboy/export/spineboy-pma.atlas".into());
+//!         },
+//!     );
+//!     commands.spawn(SpineSkeleton::new(skel).with_initial_animation(0, "walk", true));
+//! }
+//!
+//! App::new()
+//!     .add_plugins(DefaultPlugins)
+//!     .add_plugins(SpinePlugin)
+//!     .add_systems(Startup, setup)
+//!     .run();
+//! ```
+//!
+//! # How it fits together
+//!
+//! [`SpinePlugin`] registers asset loaders, the [`SpineMaterial`]
+//! `Material2d` plugin, two `Message` types for animation events, and four
+//! ordered system stages:
+//!
+//! 1. [`SpineSet::Init`] — observes assets that finished loading and
+//!    builds the per-instance runtime state.
+//! 2. [`SpineSet::Tick`] — advances animation time, applies timelines,
+//!    re-integrates world transforms, emits the per-frame
+//!    `RenderCommand` stream into each skeleton's renderer. Parallel
+//!    over skeletons.
+//! 3. [`SpineSet::BuildMeshes`] — converts that command stream into
+//!    Bevy `Mesh` + `MeshMaterial2d<SpineMaterial>` children.
+//! 4. [`SpineSet::Events`] — drains lifecycle + keyframe events into
+//!    [`SpineStateEvent`] / [`SpineKeyframeEvent`] writers.
+//!
+//! User systems can `.before(SpineSet::Tick)` to mutate `time_scale` or
+//! queue animations on the same frame they take effect.
+//!
+//! # Atlas expectations
+//!
+//! The shipped material assumes premultiplied-alpha textures. Spine
+//! exports usually ship `*-pma.atlas` / `*-pma.png` variants alongside
+//! straight-alpha pairs; prefer the PMA variant via
+//! [`SpineSkeletonLoaderSettings::atlas_path`].
+//!
+//! [`dm_spine_runtime`]: https://github.com/dead-money/dm_spine_runtime
 
 use bevy::asset::AssetApp;
 use bevy::prelude::*;
@@ -50,10 +98,12 @@ pub use components::{PendingAnimation, SpineSkeleton, SpineSkeletonState};
 pub use material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterialKey};
 pub use mesh::build_spine_meshes;
 pub use systems::{
-    SpineKeyframeEvent, SpineSet, SpineStateEvent, drain_spine_events,
+    SpineInitialized, SpineKeyframeEvent, SpineSet, SpineStateEvent, drain_spine_events,
     initialize_spine_skeletons, tick_spine_skeletons,
 };
 
+/// Bevy plugin entry point. Register once during `App` setup; spawns
+/// [`SpineSkeleton`] components afterward to bring rigs to life.
 #[derive(Default)]
 pub struct SpinePlugin;
 

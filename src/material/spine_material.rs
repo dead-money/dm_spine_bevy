@@ -50,23 +50,28 @@ pub struct SpineColors {
     pub dark: Vec4,
 }
 
-/// 2D material emitted by [`crate::mesh`] for each `RenderCommand`. Carries
-/// the atlas-page texture, the batched slot colors (as a single uniform),
-/// and the blend mode.
+/// 2D material emitted by [`crate::mesh`] for each batched `RenderCommand`.
+/// Pairs an atlas-page texture with the slot's premultiplied colors and a
+/// blend mode.
 ///
-/// `blend_mode` is promoted into the material key via
-/// [`SpineMaterialKey`] so the pipeline specializer caches one pipeline per
-/// mode (4 permutations total).
+/// `blend_mode` is promoted into [`SpineMaterialKey`] so the
+/// `Material2d` pipeline specializer caches one pipeline per mode (four
+/// permutations total).
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
 #[bind_group_data(SpineMaterialKey)]
 pub struct SpineMaterial {
+    /// Per-slot light + dark tint, shared across every vertex of one
+    /// command (the runtime's adjacency batcher only merges commands
+    /// with identical colors).
     #[uniform(0)]
     pub colors: SpineColors,
+    /// Atlas page the command samples from. Resolved by the mesh-build
+    /// system from `SpineAtlasAsset::pages` keyed by `RenderCommand::texture`.
     #[texture(1)]
     #[sampler(2)]
     pub texture: Handle<Image>,
-    /// Not a bind-group field; copied into [`SpineMaterialKey`] for the
-    /// specialize path.
+    /// Spine blend mode. Not a bind-group field — copied into
+    /// [`SpineMaterialKey`] for pipeline specialization.
     pub blend_mode: SpineBlendMode,
 }
 

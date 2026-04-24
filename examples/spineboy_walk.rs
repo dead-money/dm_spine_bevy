@@ -40,12 +40,11 @@ use bevy::prelude::*;
 
 use dm_spine_bevy::{SpinePlugin, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
 
+mod common;
+
 fn main() {
-    // Bevy resolves AssetPlugin::file_path relative to the executable's
-    // directory at runtime, not the project root, so canonicalize first.
-    let asset_root = std::path::PathBuf::from("../spine-runtimes/examples")
-        .canonicalize()
-        .expect("spine-runtimes/examples must exist as a sibling clone");
+    let asset_root = common::resolve_asset_root(None)
+        .expect("spineboy_walk: clone https://github.com/EsotericSoftware/spine-runtimes alongside this repo");
 
     App::new()
         .add_plugins(

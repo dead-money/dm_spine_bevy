@@ -70,28 +70,44 @@ pub struct SpineSkeleton {
 }
 
 /// Runtime state owned by a [`SpineSkeleton`] once its asset has loaded.
+/// Constructed by [`crate::systems::initialize_spine_skeletons`]; everything
+/// here is per-instance (no shared mutable state across skeletons).
 pub struct SpineSkeletonState {
+    /// Pose state — bone transforms, slot attachments, draw order.
     pub skeleton: Skeleton,
+    /// Multi-track animation playback. Mutate directly via
+    /// [`SpineSkeleton::animation_state_mut`] for queueing / mixing
+    /// beyond what [`SpineSkeleton::play`] covers.
     pub animation_state: AnimationState,
+    /// Owns scratch buffers + the most recent `RenderCommand` stream.
+    /// Read via `renderer.commands()` in `SpineSet::BuildMeshes`.
     pub renderer: SkeletonRenderer,
     /// Reusable per-frame event buffer. Cleared and refilled each tick;
-    /// drained into Bevy events by [`crate::systems::drain_spine_events`].
+    /// drained into Bevy messages by [`crate::systems::drain_spine_events`].
     pub events: Vec<Event>,
-    /// One entry per slot in the render-command stream. Sized up lazily as
-    /// the frame-to-frame command count grows; shrinks are hidden rather
-    /// than despawned so subsequent growth reuses the same child entities.
-    /// Populated by [`crate::mesh::build_spine_meshes`].
+    /// Mesh asset per `RenderCommand` slot. Sized up lazily as the
+    /// frame-to-frame command count grows; the vec is index-parallel
+    /// with `materials` and `children`. Populated by
+    /// [`crate::mesh::build_spine_meshes`].
     pub meshes: Vec<Handle<Mesh>>,
+    /// Material asset per `RenderCommand` slot. Index-parallel with
+    /// `meshes`.
     pub materials: Vec<Handle<SpineMaterial>>,
+    /// Child entity per `RenderCommand` slot. Index-parallel with
+    /// `meshes`. Excess entities (after the command count shrinks) are
+    /// hidden rather than despawned so re-growth reuses them.
     pub children: Vec<Entity>,
 }
 
-/// Deferred animation request. Stored on [`SpineSkeleton::pending_animation`]
-/// until init runs.
+/// Deferred animation request stored on [`SpineSkeleton::pending_animation`]
+/// when [`SpineSkeleton::play`] is called before the asset has loaded.
 #[derive(Clone, Debug)]
 pub struct PendingAnimation {
+    /// Track index inside `AnimationState` (track 0 is the primary).
     pub track: usize,
+    /// Animation name as declared in `SkeletonData::animations`.
     pub name: String,
+    /// `true` to loop, `false` to play once.
     pub looping: bool,
 }
 

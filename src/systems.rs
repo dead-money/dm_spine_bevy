@@ -50,25 +50,31 @@ pub enum SpineSet {
     /// rebuild the render-command stream.
     Tick,
     /// Consume the frame's render commands into Bevy meshes + materials.
-    /// Wired in Phase 7c.
     BuildMeshes,
-    /// Drain per-entry lifecycle + keyframe events into Bevy [`Event`]
+    /// Drain per-entry lifecycle + keyframe events into the
+    /// [`crate::SpineStateEvent`] / [`crate::SpineKeyframeEvent`] message
     /// writers. Runs after [`Self::Tick`].
     Events,
 }
 
-/// Watches [`SpineSkeleton`] entities whose `state` is still `None` and the
-/// asset they point at has arrived. Constructs the runtime state, runs a
-/// first `update_cache` / `set_to_setup_pose`, and kicks off any
-/// `pending_animation`.
+/// Marker component inserted on a [`SpineSkeleton`] entity once its asset
+/// has loaded and [`initialize_spine_skeletons`] has constructed the
+/// runtime state. Lets later systems (and the init system itself) skip
+/// the entity using a `Without<SpineInitialized>` filter rather than
+/// scanning all skeletons every frame.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SpineInitialized;
+
+/// Constructs runtime state for any [`SpineSkeleton`] whose asset has
+/// finished loading: builds the [`Skeleton`], applies any pending
+/// animation / skin, and inserts a [`SpineInitialized`] marker. Once
+/// marked, the entity is filtered out of subsequent runs.
 pub fn initialize_spine_skeletons(
-    mut query: Query<&mut SpineSkeleton>,
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut SpineSkeleton), Without<SpineInitialized>>,
     assets: Res<Assets<SpineSkeletonAsset>>,
 ) {
-    for mut sk in &mut query {
-        if sk.state.is_some() {
-            continue;
-        }
+    for (entity, mut sk) in &mut query {
         let Some(asset) = assets.get(&sk.asset) else {
             continue;
         };
@@ -77,8 +83,6 @@ pub fn initialize_spine_skeletons(
         let mut skeleton = Skeleton::new(Arc::clone(&data));
         skeleton.update_cache();
         skeleton.set_to_setup_pose();
-        // First-pass world transform with no physics stepping — matches the
-        // Phase 0-6 end-to-end flow used by `tests/render_smoke.rs`.
         skeleton.update_world_transform(Physics::None);
 
         let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
@@ -114,23 +118,34 @@ pub fn initialize_spine_skeletons(
             materials: Vec::new(),
             children: Vec::new(),
         });
+        commands.entity(entity).insert(SpineInitialized);
     }
 }
 
-/// Advance one frame on every initialized skeleton: update animation state,
-/// apply timelines, re-integrate world transforms, emit the frame's render
-/// commands into the internal buffer on [`SkeletonRenderer`]. Read commands
-/// via `state.renderer.commands()` in [`SpineSet::BuildMeshes`].
-pub fn tick_spine_skeletons(time: Res<Time>, mut query: Query<&mut SpineSkeleton>) {
+/// Advance one frame on every initialized skeleton: update animation
+/// state, apply timelines, re-integrate world transforms, emit the
+/// frame's render commands into the internal buffer on
+/// [`SkeletonRenderer`]. Read the commands via
+/// `state.renderer.commands()` in [`SpineSet::BuildMeshes`].
+///
+/// Iterates skeletons in parallel via Bevy's `par_iter_mut`. Each
+/// skeleton's runtime state is owned by its component; the only shared
+/// data is the read-only `Arc<SkeletonData>`, so per-skeleton work is
+/// embarrassingly parallel and scales near-linearly with cores at
+/// realistic skeleton counts.
+pub fn tick_spine_skeletons(
+    time: Res<Time>,
+    mut query: Query<&mut SpineSkeleton, With<SpineInitialized>>,
+) {
     let base_dt = time.delta_secs();
-    for mut sk in &mut query {
+    query.par_iter_mut().for_each(|mut sk| {
         if sk.paused {
-            continue;
+            return;
         }
         let scale = sk.time_scale;
         let physics = sk.physics;
         let Some(state) = sk.state.as_mut() else {
-            continue;
+            return;
         };
 
         let dt = base_dt * scale;
@@ -141,7 +156,7 @@ pub fn tick_spine_skeletons(time: Res<Time>, mut query: Query<&mut SpineSkeleton
             .apply(&mut state.skeleton, &mut state.events);
         state.skeleton.update_world_transform(physics);
         let _ = state.renderer.render(&state.skeleton);
-    }
+    });
 }
 
 /// One lifecycle / keyframe event pulled off a [`SpineSkeleton`] after the

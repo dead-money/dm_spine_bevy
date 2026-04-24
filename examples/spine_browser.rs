@@ -35,7 +35,7 @@
 //!
 //! [`EsotericSoftware/spine-runtimes`]: https://github.com/EsotericSoftware/spine-runtimes
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bevy::asset::AssetPlugin;
@@ -45,18 +45,8 @@ use bevy::window::WindowResolution;
 
 use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
 
-/// One discoverable rig variant.
-#[derive(Clone, Debug)]
-struct RigEntry {
-    /// Display label, e.g. `"spineboy / spineboy-pro"`.
-    label: String,
-    /// Path inside the asset root to the `.skel` file, e.g.
-    /// `"spineboy/export/spineboy-pro.skel"`.
-    skel_relpath: String,
-    /// Path inside the asset root to the `.atlas` file. PMA variant
-    /// preferred; falls back to non-PMA if no `-pma.atlas` is present.
-    atlas_relpath: String,
-}
+mod common;
+use common::RigEntry;
 
 #[derive(Resource)]
 struct Browser {
@@ -159,15 +149,15 @@ fn parse_cli() -> Cli {
 fn main() -> ExitCode {
     let cli = parse_cli();
 
-    let asset_root = match resolve_asset_root(cli.assets.clone()) {
+    let asset_root = match common::resolve_asset_root(cli.assets.clone()) {
         Ok(p) => p,
         Err(message) => {
-            eprintln!("{message}");
+            eprintln!("spine_browser: {message}");
             return ExitCode::from(1);
         }
     };
 
-    let rigs = discover_rigs(&asset_root);
+    let rigs = common::discover_rigs(&asset_root);
     if rigs.is_empty() {
         eprintln!(
             "spine_browser: no rigs found under {}.\n\
@@ -247,18 +237,12 @@ fn main() -> ExitCode {
     );
 
     // Optional single-shot screenshot.
-    if let Ok(path) = std::env::var("SPINE_BROWSER_SCREENSHOT") {
-        let frames: u32 = std::env::var("SPINE_BROWSER_SCREENSHOT_FRAMES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(120);
-        app.insert_resource(ScreenshotConfig {
-            path,
-            trigger_frame: frames,
-            current_frame: 0,
-            taken: false,
-        });
-        app.add_systems(Update, screenshot_driver);
+    if let Some(cfg) = common::ScreenshotConfig::from_env(
+        "SPINE_BROWSER_SCREENSHOT",
+        "SPINE_BROWSER_SCREENSHOT_FRAMES",
+        120,
+    ) {
+        common::install_screenshot_driver(&mut app, cfg);
     }
 
     // Optional frame-sequence recording for assembling animated GIFs.
@@ -287,37 +271,6 @@ fn main() -> ExitCode {
     app.run();
 
     ExitCode::SUCCESS
-}
-
-#[derive(Resource)]
-struct ScreenshotConfig {
-    path: String,
-    trigger_frame: u32,
-    current_frame: u32,
-    taken: bool,
-}
-
-fn screenshot_driver(
-    mut commands: Commands,
-    mut cfg: ResMut<ScreenshotConfig>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    cfg.current_frame += 1;
-    const EXIT_GRACE_FRAMES: u32 = 30;
-    if cfg.taken {
-        if cfg.current_frame >= cfg.trigger_frame + EXIT_GRACE_FRAMES {
-            exit.write(AppExit::Success);
-        }
-        return;
-    }
-    if cfg.current_frame >= cfg.trigger_frame {
-        let path = cfg.path.clone();
-        info!("spine_browser: capturing screenshot to {path}");
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path));
-        cfg.taken = true;
-    }
 }
 
 /// Frame-sequence record driver: writes `frame_NNNN.png` into `out_dir`
@@ -369,129 +322,6 @@ fn record_driver(
         );
         cfg.done_frame = Some(cfg.current_frame);
     }
-}
-
-// ---- Asset-root + rig discovery ------------------------------------------
-
-fn resolve_asset_root(cli_assets: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(p) = cli_assets {
-        return validate_root(p);
-    }
-    if let Ok(p) = std::env::var("SPINE_EXAMPLES_DIR") {
-        return validate_root(PathBuf::from(p));
-    }
-    for fallback in ["../spine-runtimes/examples", "./spine-runtimes/examples"] {
-        let p = PathBuf::from(fallback);
-        if p.is_dir() {
-            return validate_root(p);
-        }
-    }
-    Err(MISSING_ASSETS_HELP.to_string())
-}
-
-fn validate_root(p: PathBuf) -> Result<PathBuf, String> {
-    if !p.is_dir() {
-        return Err(format!(
-            "spine_browser: --assets path {} does not exist or is not a directory",
-            p.display()
-        ));
-    }
-    p.canonicalize().map_err(|e| {
-        format!(
-            "spine_browser: cannot canonicalize asset path {}: {e}",
-            p.display()
-        )
-    })
-}
-
-const MISSING_ASSETS_HELP: &str = "spine_browser: could not find Spine example rigs.
-
-Pass an asset root via one of:
-  --assets <path>
-  SPINE_EXAMPLES_DIR=<path>
-  ./spine-runtimes/examples
-  ../spine-runtimes/examples
-
-The expected source is the upstream spine-runtimes repo:
-  git clone https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
-
-(Spine example art is licensed separately from this crate and is not
-bundled.)";
-
-/// Walk `<root>/<rig>/export/` and emit one [`RigEntry`] per `.skel` file,
-/// pairing it with the closest matching atlas (PMA preferred).
-fn discover_rigs(root: &Path) -> Vec<RigEntry> {
-    let mut out = Vec::new();
-    let Ok(rig_dirs) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for rig_dir in rig_dirs.flatten() {
-        let rig_dir = rig_dir.path();
-        if !rig_dir.is_dir() {
-            continue;
-        }
-        let export = rig_dir.join("export");
-        if !export.is_dir() {
-            continue;
-        }
-        let rig_name = rig_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-
-        let skels: Vec<PathBuf> = std::fs::read_dir(&export)
-            .map(|it| {
-                it.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "skel"))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        for skel in skels {
-            let stem = skel
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
-            let Some(atlas) = pick_atlas(&export, &stem) else {
-                continue;
-            };
-            out.push(RigEntry {
-                label: format!("{rig_name} / {stem}"),
-                skel_relpath: relpath(root, &skel),
-                atlas_relpath: relpath(root, &atlas),
-            });
-        }
-    }
-    out.sort_by(|a, b| a.label.cmp(&b.label));
-    out
-}
-
-/// Find the best atlas for a skeleton with the given stem. PMA variant
-/// preferred. Tries (in order): `<base>-pma.atlas`, `<base>.atlas`, where
-/// `<base>` is the stem with trailing `-pro`/`-ess`/`-ios` stripped.
-fn pick_atlas(export: &Path, skel_stem: &str) -> Option<PathBuf> {
-    let base = ["-pro", "-ess", "-ios"]
-        .into_iter()
-        .find_map(|sfx| skel_stem.strip_suffix(sfx))
-        .unwrap_or(skel_stem);
-
-    for candidate in [format!("{base}-pma.atlas"), format!("{base}.atlas")] {
-        let p = export.join(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn relpath(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 // ---- Setup + spawn -------------------------------------------------------
@@ -714,37 +544,22 @@ fn live_fit_camera(
     if let Some(entity) = browser.skeleton_entity
         && let Ok(sk) = sk_query.get(entity)
         && let Some(state) = &sk.state
+        && let Some((min, max)) = common::aggregate_bounds(state)
     {
-        let mut have_any = false;
-        let mut xmin = f32::INFINITY;
-        let mut xmax = f32::NEG_INFINITY;
-        let mut ymin = f32::INFINITY;
-        let mut ymax = f32::NEG_INFINITY;
-        for cmd in state.renderer.commands() {
-            if let Some((cxmin, cxmax, cymin, cymax)) = cmd.position_bounds() {
-                xmin = xmin.min(cxmin);
-                xmax = xmax.max(cxmax);
-                ymin = ymin.min(cymin);
-                ymax = ymax.max(cymax);
-                have_any = true;
-            }
-        }
-        if have_any {
-            let center = Vec2::new((xmin + xmax) * 0.5, (ymin + ymax) * 0.5);
-            let height = ((ymax - ymin) * VIEW_MARGIN).max(MIN_VIEW_HEIGHT);
-            // Account for window aspect: if the rig is wider than tall,
-            // bumping height by the inverse aspect keeps it horizontally
-            // in-frame too.
-            let aspect = windows
-                .iter()
-                .next()
-                .map_or(16.0 / 9.0, |w| w.width() / w.height().max(1.0));
-            let needed_for_width = (xmax - xmin) * VIEW_MARGIN / aspect;
-            browser.target_view = View {
-                center,
-                height: height.max(needed_for_width).max(MIN_VIEW_HEIGHT),
-            };
-        }
+        let center = (min + max) * 0.5;
+        let height = ((max.y - min.y) * VIEW_MARGIN).max(MIN_VIEW_HEIGHT);
+        // Account for window aspect: when a rig is wider than tall,
+        // bumping height by the inverse aspect keeps it horizontally
+        // in-frame too.
+        let aspect = windows
+            .iter()
+            .next()
+            .map_or(16.0 / 9.0, |w| w.width() / w.height().max(1.0));
+        let needed_for_width = (max.x - min.x) * VIEW_MARGIN / aspect;
+        browser.target_view = View {
+            center,
+            height: height.max(needed_for_width).max(MIN_VIEW_HEIGHT),
+        };
     }
 
     // Smooth current toward target.

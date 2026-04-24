@@ -1,1 +1,23 @@
 /target
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.un~
+*.orig
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Claude Code personal overrides (team settings.json is committed)
+.claude/settings.local.json
+
+# Ad-hoc capture output from screenshot / record / stress modes. They
+# write next to Cargo.toml by default; the docs/ folder is the curated
+# home for assets that ship with the repo.
+/*.png
+/spine_browser_recording*/

@@ -26,7 +26,7 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::sprite_render::MeshMaterial2d;
 
@@ -42,16 +42,17 @@ use crate::material::{SpineBlendMode, SpineColors, SpineMaterial};
 /// front of earlier ones.
 const Z_OFFSET_PER_COMMAND: f32 = 0.001;
 
-/// Builds (and rebuilds) Bevy meshes + materials for every initialized
-/// skeleton each frame. Runs in [`crate::SpineSet::BuildMeshes`], after
-/// the tick system populated `SkeletonRenderer`'s internal command buffer.
+/// (Re)builds Bevy meshes + materials for every initialized skeleton
+/// each frame. Runs in [`crate::SpineSet::BuildMeshes`], after the tick
+/// stage populated `SkeletonRenderer`'s internal command buffer.
 ///
-/// Strategy: each skeleton owns a parallel `Vec<Entity>` /
-/// `Vec<Handle<Mesh>>` / `Vec<Handle<SpineMaterial>>`, one slot per
-/// `RenderCommand`. Meshes and materials are mutated in place via
-/// `Assets::get_mut`; new child entities are spawned only when the command
-/// count grows. Children past `cmds.len()` are hidden rather than
-/// despawned so growth/shrink/growth doesn't churn entities.
+/// Per-skeleton state holds an index-parallel `Vec<Entity>` /
+/// `Vec<Handle<Mesh>>` / `Vec<Handle<SpineMaterial>>`, one entry per
+/// `RenderCommand` slot. Mesh attribute buffers are reused across frames
+/// (cleared and re-extended in place); new child entities are spawned
+/// only when the command count grows; children past the current command
+/// count are hidden rather than despawned so subsequent growth reuses
+/// them.
 #[allow(clippy::too_many_arguments)]
 pub fn build_spine_meshes(
     mut commands: Commands,
@@ -152,26 +153,53 @@ fn grow_child_buffers(
 }
 
 fn empty_mesh() -> Mesh {
-    // We mutate these meshes every frame via Assets::get_mut, so they must
-    // stay resident in the main world. `RENDER_WORLD` alone causes the
-    // mesh to be extracted and dropped from the main world after frame 1,
-    // which trips `Mesh::insert_attribute` next frame.
+    // Must stay in main world; `RENDER_WORLD` alone drops the mesh after
+    // extract and the next frame's `insert_attribute` then panics.
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
 }
 
 /// Convert a [`RenderCommand`]'s interleaved position/uv buffers + index
-/// list into mesh attributes, overwriting whatever was there.
+/// list into mesh attributes, reusing the mesh's existing storage when
+/// possible. The first call on a fresh `Mesh` falls through to
+/// `insert_attribute` / `insert_indices`; subsequent calls clear and
+/// extend the same `Vec`s in place, so steady-state per-frame work is
+/// just two `Vec::extend` plus one `Vec::extend_from_slice`.
 pub(crate) fn write_mesh_from_command(mesh: &mut Mesh, cmd: &RenderCommand) {
     let n = cmd.num_vertices();
-    let mut positions = Vec::with_capacity(n);
-    let mut uvs = Vec::with_capacity(n);
-    for i in 0..n {
-        positions.push([cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0]);
-        uvs.push([cmd.uvs[i * 2], cmd.uvs[i * 2 + 1]]);
+
+    // Positions.
+    if let Some(VertexAttributeValues::Float32x3(buf)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    {
+        buf.clear();
+        buf.extend(
+            (0..n).map(|i| [cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0]),
+        );
+    } else {
+        let positions: Vec<[f32; 3]> = (0..n)
+            .map(|i| [cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0])
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_indices(Indices::U16(cmd.indices.clone()));
+
+    // UVs.
+    if let Some(VertexAttributeValues::Float32x2(buf)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
+        buf.clear();
+        buf.extend((0..n).map(|i| [cmd.uvs[i * 2], cmd.uvs[i * 2 + 1]]));
+    } else {
+        let uvs: Vec<[f32; 2]> = (0..n)
+            .map(|i| [cmd.uvs[i * 2], cmd.uvs[i * 2 + 1]])
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    }
+
+    // Indices.
+    if let Some(Indices::U16(buf)) = mesh.indices_mut() {
+        buf.clear();
+        buf.extend_from_slice(&cmd.indices);
+    } else {
+        mesh.insert_indices(Indices::U16(cmd.indices.clone()));
+    }
 }
 
 /// Unpack a spine-runtime `0xAARRGGBB` color into a `[0..1]^4` RGBA Vec4.

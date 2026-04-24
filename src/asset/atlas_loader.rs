@@ -47,6 +47,9 @@ pub struct SpineAtlasAsset {
     pub pages: Vec<Handle<Image>>,
 }
 
+/// Bevy asset loader for `.atlas` files. Parses the atlas text and
+/// triggers a dependent `Image` load for every page so all PNGs land in
+/// the asset server alongside the atlas itself.
 #[derive(Default, TypePath)]
 pub struct SpineAtlasLoader;
 

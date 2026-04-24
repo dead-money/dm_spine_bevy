@@ -25,17 +25,17 @@
 //!
 //! ## Controls
 //!
-//! - **Up** / **Down** arrows: scale skeleton count by 1.5x
-//! - **0**: halve the count
+//! - **`]`** / **`[`**: step the population to the next / previous perfect
+//!   square (1 → 4 → 9 → 16 → …). Grid stays centered on the origin.
 //! - **R**: reset to the initial count
 //! - **Esc**: quit
 //!
 //! ## CLI / env
 //!
 //! - `--rig <substring>`: pick the rig by label substring (default `spineboy-pro`).
-//! - `--anim <name>`: animation name to play. Default: first animation
-//!   in the loaded `SkeletonData`.
-//! - `--count <N>`: initial skeleton count (default 100).
+//! - `--anim <name>`: animation name to play. Default: spineboy's `run`,
+//!   falling back to the first declared animation if absent.
+//! - `--count <N>`: initial skeleton count (default 1).
 //! - `--csv <path>`: append `frame,count,fps,tick_ms,build_ms` rows to
 //!   the path each frame for offline analysis.
 //! - `--width <w>` / `--height <h>`: window resolution.
@@ -44,18 +44,20 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use bevy::asset::AssetPlugin;
 use bevy::diagnostic::{Diagnostic, DiagnosticPath, Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::{PresentMode, WindowResolution};
 
 use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
 use dm_spine_runtime::skeleton::Physics;
+
+mod common;
+use common::RigEntry;
 
 /// Diagnostic path for the per-frame `SpineSet::Tick` duration.
 const TICK_MS: DiagnosticPath = DiagnosticPath::const_new("dm_spine_bevy/tick_ms");
@@ -106,12 +108,6 @@ fn parse_cli() -> Cli {
     cli
 }
 
-#[derive(Clone)]
-struct RigEntry {
-    label: String,
-    skel_relpath: String,
-    atlas_relpath: String,
-}
 
 #[derive(Resource)]
 struct StressConfig {
@@ -162,14 +158,14 @@ struct NeedsTimeOffset(f32);
 fn main() -> ExitCode {
     let cli = parse_cli();
 
-    let asset_root = match resolve_asset_root(cli.assets.clone()) {
+    let asset_root = match common::resolve_asset_root(cli.assets.clone()) {
         Ok(p) => p,
         Err(message) => {
-            eprintln!("{message}");
+            eprintln!("spine_stress: {message}");
             return ExitCode::from(1);
         }
     };
-    let rigs = discover_rigs(&asset_root);
+    let rigs = common::discover_rigs(&asset_root);
     if rigs.is_empty() {
         eprintln!(
             "spine_stress: no rigs found under {}",
@@ -252,18 +248,12 @@ fn main() -> ExitCode {
     }
 
     // Optional one-shot screenshot for docs / smoke verification.
-    if let Ok(path) = std::env::var("SPINE_STRESS_SCREENSHOT") {
-        let frames: u32 = std::env::var("SPINE_STRESS_SCREENSHOT_FRAMES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(120);
-        app.insert_resource(StressScreenshotConfig {
-            path,
-            trigger_frame: frames,
-            current_frame: 0,
-            taken: false,
-        });
-        app.add_systems(Update, stress_screenshot_driver);
+    if let Some(cfg) = common::ScreenshotConfig::from_env(
+        "SPINE_STRESS_SCREENSHOT",
+        "SPINE_STRESS_SCREENSHOT_FRAMES",
+        120,
+    ) {
+        common::install_screenshot_driver(&mut app, cfg);
     }
 
     app
@@ -276,10 +266,7 @@ fn main() -> ExitCode {
                 converge_population,
                 update_hud,
                 mark_tick_start.before(SpineSet::Tick),
-                mark_tick_end
-                    .after(SpineSet::Tick)
-                    .before(SpineSet::BuildMeshes),
-                mark_build_start
+                mark_tick_end_and_build_start
                     .after(SpineSet::Tick)
                     .before(SpineSet::BuildMeshes),
                 mark_build_end.after(SpineSet::BuildMeshes),
@@ -288,36 +275,6 @@ fn main() -> ExitCode {
         .run();
 
     ExitCode::SUCCESS
-}
-
-#[derive(Resource)]
-struct StressScreenshotConfig {
-    path: String,
-    trigger_frame: u32,
-    current_frame: u32,
-    taken: bool,
-}
-
-fn stress_screenshot_driver(
-    mut commands: Commands,
-    mut cfg: ResMut<StressScreenshotConfig>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    cfg.current_frame += 1;
-    const EXIT_GRACE_FRAMES: u32 = 30;
-    if cfg.taken {
-        if cfg.current_frame >= cfg.trigger_frame + EXIT_GRACE_FRAMES {
-            exit.write(AppExit::Success);
-        }
-        return;
-    }
-    if cfg.current_frame >= cfg.trigger_frame {
-        let path = cfg.path.clone();
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path));
-        cfg.taken = true;
-    }
 }
 
 fn register_diagnostics(mut store: ResMut<DiagnosticsStore>) {
@@ -566,15 +523,16 @@ fn mark_tick_start(mut t: ResMut<StageTimers>) {
     t.tick_start = Some(Instant::now());
 }
 
-fn mark_tick_end(mut t: ResMut<StageTimers>, mut diagnostics: Diagnostics) {
+/// One system between Tick and BuildMeshes: closes out tick timing,
+/// opens build timing. Combined to avoid two unordered ResMut systems
+/// touching `StageTimers` in the same gap.
+fn mark_tick_end_and_build_start(mut t: ResMut<StageTimers>, mut diagnostics: Diagnostics) {
+    let now = Instant::now();
     if let Some(start) = t.tick_start.take() {
-        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        let ms = (now - start).as_secs_f64() * 1000.0;
         diagnostics.add_measurement(&TICK_MS, || ms);
     }
-}
-
-fn mark_build_start(mut t: ResMut<StageTimers>) {
-    t.build_start = Some(Instant::now());
+    t.build_start = Some(now);
 }
 
 fn mark_build_end(mut t: ResMut<StageTimers>, mut diagnostics: Diagnostics) {
@@ -647,105 +605,6 @@ fn write_csv_row(
         writer.file,
         "{frame},{count},{fps:.2},{tick_ms:.3},{build_ms:.3}",
     );
-}
-
-// ---- Asset root + rig discovery (mirrors spine_browser) ------------------
-
-fn resolve_asset_root(cli_assets: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(p) = cli_assets {
-        return validate_root(p);
-    }
-    if let Ok(p) = std::env::var("SPINE_EXAMPLES_DIR") {
-        return validate_root(PathBuf::from(p));
-    }
-    for fallback in ["../spine-runtimes/examples", "./spine-runtimes/examples"] {
-        let p = PathBuf::from(fallback);
-        if p.is_dir() {
-            return validate_root(p);
-        }
-    }
-    Err("spine_stress: pass --assets <path> to upstream spine-runtimes/examples".to_string())
-}
-
-fn validate_root(p: PathBuf) -> Result<PathBuf, String> {
-    if !p.is_dir() {
-        return Err(format!(
-            "spine_stress: --assets path {} does not exist",
-            p.display()
-        ));
-    }
-    // Canonicalize so the path doesn't change meaning when Bevy interprets
-    // it from inside `target/release/examples/`.
-    p.canonicalize()
-        .map_err(|e| format!("spine_stress: cannot canonicalize {}: {e}", p.display()))
-}
-
-fn discover_rigs(root: &Path) -> Vec<RigEntry> {
-    let mut out = Vec::new();
-    let Ok(rig_dirs) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for rig_dir in rig_dirs.flatten() {
-        let rig_dir = rig_dir.path();
-        if !rig_dir.is_dir() {
-            continue;
-        }
-        let export = rig_dir.join("export");
-        if !export.is_dir() {
-            continue;
-        }
-        let rig_name = rig_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        let skels: Vec<PathBuf> = std::fs::read_dir(&export)
-            .map(|it| {
-                it.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "skel"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for skel in skels {
-            let stem = skel
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
-            let Some(atlas) = pick_atlas(&export, &stem) else {
-                continue;
-            };
-            out.push(RigEntry {
-                label: format!("{rig_name} / {stem}"),
-                skel_relpath: relpath(root, &skel),
-                atlas_relpath: relpath(root, &atlas),
-            });
-        }
-    }
-    out.sort_by(|a, b| a.label.cmp(&b.label));
-    out
-}
-
-fn pick_atlas(export: &Path, skel_stem: &str) -> Option<PathBuf> {
-    let base = ["-pro", "-ess", "-ios"]
-        .into_iter()
-        .find_map(|sfx| skel_stem.strip_suffix(sfx))
-        .unwrap_or(skel_stem);
-    for candidate in [format!("{base}-pma.atlas"), format!("{base}.atlas")] {
-        let p = export.join(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn relpath(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 // ---- Misc ----------------------------------------------------------------

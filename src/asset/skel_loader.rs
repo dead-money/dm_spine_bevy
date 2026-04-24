@@ -63,6 +63,10 @@ pub struct SpineSkeletonLoaderSettings {
     pub scale: Option<f32>,
 }
 
+/// Bevy asset loader for `.skel` files. Loads the companion atlas
+/// (resolved via [`SpineSkeletonLoaderSettings::atlas_path`] or derived
+/// from the skeleton's filename stem), runs the binary skeleton parser
+/// against it, and yields a [`SpineSkeletonAsset`].
 #[derive(Default, TypePath)]
 pub struct SpineSkeletonLoader;
 
