@@ -49,11 +49,15 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use bevy::asset::AssetPlugin;
-use bevy::diagnostic::{Diagnostic, DiagnosticPath, Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::diagnostic::{
+    Diagnostic, DiagnosticPath, Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin,
+};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 
-use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
+use dm_spine_bevy::{
+    SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings,
+};
 use dm_spine_runtime::skeleton::Physics;
 
 mod common;
@@ -107,7 +111,6 @@ fn parse_cli() -> Cli {
     }
     cli
 }
-
 
 #[derive(Resource)]
 struct StressConfig {
@@ -167,10 +170,7 @@ fn main() -> ExitCode {
     };
     let rigs = common::discover_rigs(&asset_root);
     if rigs.is_empty() {
-        eprintln!(
-            "spine_stress: no rigs found under {}",
-            asset_root.display()
-        );
+        eprintln!("spine_stress: no rigs found under {}", asset_root.display());
         return ExitCode::from(1);
     }
 
@@ -178,7 +178,10 @@ fn main() -> ExitCode {
     let Some(rig) = rigs.iter().find(|r| r.label.contains(want)).cloned() else {
         eprintln!(
             "spine_stress: no rig matching {want:?}. Available labels:\n{}",
-            rigs.iter().map(|r| format!("  - {}", r.label)).collect::<Vec<_>>().join("\n")
+            rigs.iter()
+                .map(|r| format!("  - {}", r.label))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         return ExitCode::from(1);
     };
@@ -256,29 +259,32 @@ fn main() -> ExitCode {
         common::install_screenshot_driver(&mut app, cfg);
     }
 
-    app
-        .add_systems(
-            Update,
-            (
-                handle_input,
-                seed_time_offsets,
-                measure_cell_size,
-                converge_population,
-                update_hud,
-                mark_tick_start.before(SpineSet::Tick),
-                mark_tick_end_and_build_start
-                    .after(SpineSet::Tick)
-                    .before(SpineSet::BuildMeshes),
-                mark_build_end.after(SpineSet::BuildMeshes),
-            ),
-        )
-        .run();
+    app.add_systems(
+        Update,
+        (
+            handle_input,
+            seed_time_offsets,
+            measure_cell_size,
+            converge_population,
+            update_hud,
+            mark_tick_start.before(SpineSet::Tick),
+            mark_tick_end_and_build_start
+                .after(SpineSet::Tick)
+                .before(SpineSet::BuildMeshes),
+            mark_build_end.after(SpineSet::BuildMeshes),
+        ),
+    )
+    .run();
 
     ExitCode::SUCCESS
 }
 
 fn register_diagnostics(mut store: ResMut<DiagnosticsStore>) {
-    store.add(Diagnostic::new(TICK_MS).with_suffix("ms").with_smoothing_factor(0.85));
+    store.add(
+        Diagnostic::new(TICK_MS)
+            .with_suffix("ms")
+            .with_smoothing_factor(0.85),
+    );
     store.add(
         Diagnostic::new(BUILD_MS)
             .with_suffix("ms")
@@ -465,7 +471,11 @@ fn spawn_one(
     let offset = jitter(state.spawn_counter) * 5.0;
     state.spawn_counter += 1;
     let entity = commands
-        .spawn((sk, Transform::from_translation(pos.extend(0.0)), NeedsTimeOffset(offset)))
+        .spawn((
+            sk,
+            Transform::from_translation(pos.extend(0.0)),
+            NeedsTimeOffset(offset),
+        ))
         .id();
     state.spawned.push(entity);
 }
@@ -613,10 +623,11 @@ fn write_csv_row(
 /// pretty; enough to scramble per-instance time offsets so the population
 /// isn't in lockstep.
 fn jitter(seed: u64) -> f32 {
-    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0xC6BC_2796_31E1_F4D5);
+    let mut x = seed
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0xC6BC_2796_31E1_F4D5);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
     x ^= x >> 33;
     ((x as u32) as f32) / (u32::MAX as f32)
 }
-

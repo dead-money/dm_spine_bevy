@@ -43,7 +43,9 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::WindowResolution;
 
-use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
+use dm_spine_bevy::{
+    SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings,
+};
 
 mod common;
 use common::RigEntry;
@@ -306,9 +308,7 @@ fn record_driver(
         return;
     }
 
-    let path = cfg
-        .out_dir
-        .join(format!("frame_{:04}.png", cfg.captured));
+    let path = cfg.out_dir.join(format!("frame_{:04}.png", cfg.captured));
     commands
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(path));
@@ -349,11 +349,7 @@ fn setup(mut commands: Commands, mut browser: ResMut<Browser>, asset_server: Res
     spawn_current_rig(&mut commands, &mut browser, &asset_server);
 }
 
-fn spawn_current_rig(
-    commands: &mut Commands,
-    browser: &mut Browser,
-    asset_server: &AssetServer,
-) {
+fn spawn_current_rig(commands: &mut Commands, browser: &mut Browser, asset_server: &AssetServer) {
     if let Some(prev) = browser.skeleton_entity.take() {
         commands.entity(prev).despawn();
     }

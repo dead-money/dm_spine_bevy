@@ -177,7 +177,10 @@ mod tests {
     fn strips_pro_suffix() {
         let skel = make_path("rigs/spineboy/export/spineboy-pro.skel");
         let atlas = resolve_atlas_path(&skel, None).unwrap();
-        assert_eq!(atlas.path().to_str(), Some("rigs/spineboy/export/spineboy.atlas"));
+        assert_eq!(
+            atlas.path().to_str(),
+            Some("rigs/spineboy/export/spineboy.atlas")
+        );
     }
 
     #[test]

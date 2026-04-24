@@ -32,6 +32,5 @@ pub mod skel_loader;
 
 pub use atlas_loader::{SpineAtlasAsset, SpineAtlasLoader, SpineAtlasLoaderError};
 pub use skel_loader::{
-    SpineSkeletonAsset, SpineSkeletonLoader, SpineSkeletonLoaderError,
-    SpineSkeletonLoaderSettings,
+    SpineSkeletonAsset, SpineSkeletonLoader, SpineSkeletonLoaderError, SpineSkeletonLoaderSettings,
 };

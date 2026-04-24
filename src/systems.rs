@@ -89,11 +89,8 @@ pub fn initialize_spine_skeletons(
         let mut animation_state = AnimationState::new(state_data);
 
         if let Some(pending) = sk.pending_animation.take()
-            && let Err(err) = animation_state.set_animation_by_name(
-                pending.track,
-                &pending.name,
-                pending.looping,
-            )
+            && let Err(err) =
+                animation_state.set_animation_by_name(pending.track, &pending.name, pending.looping)
         {
             warn!(
                 "dm_spine_bevy: pending animation {:?} on track {} failed: {err:?}",

@@ -155,7 +155,10 @@ fn grow_child_buffers(
 fn empty_mesh() -> Mesh {
     // Must stay in main world; `RENDER_WORLD` alone drops the mesh after
     // extract and the next frame's `insert_attribute` then panics.
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
 }
 
 /// Convert a [`RenderCommand`]'s interleaved position/uv buffers + index
@@ -172,9 +175,7 @@ pub(crate) fn write_mesh_from_command(mesh: &mut Mesh, cmd: &RenderCommand) {
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         buf.clear();
-        buf.extend(
-            (0..n).map(|i| [cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0]),
-        );
+        buf.extend((0..n).map(|i| [cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0]));
     } else {
         let positions: Vec<[f32; 3]> = (0..n)
             .map(|i| [cmd.positions[i * 2], cmd.positions[i * 2 + 1], 0.0])

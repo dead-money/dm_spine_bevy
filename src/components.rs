@@ -232,7 +232,13 @@ impl SpineSkeleton {
     #[must_use]
     pub fn available_animations(&self) -> Option<Vec<&str>> {
         let skel = self.skeleton()?;
-        Some(skel.data().animations.iter().map(|a| a.name.as_str()).collect())
+        Some(
+            skel.data()
+                .animations
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect(),
+        )
     }
 
     /// Names of every skin declared by the loaded `SkeletonData`. The
