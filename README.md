@@ -2,6 +2,10 @@
 
 Bevy 0.18 integration for [`dm_spine_runtime`](https://github.com/dead-money/dm_spine_runtime), the native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime.
 
+<p align="center">
+  <img src="docs/celestial-circus-swing.gif" alt="celestial-circus rig playing the swing animation, captured live from the spine_browser example" width="640">
+</p>
+
 This crate is the thin layer that maps the runtime's renderer-agnostic `RenderCommand` stream onto Bevy 2D meshes and materials. The runtime crate itself has no GPU or windowing dependency; this one knows about wgpu, `Material2d`, and the Bevy ECS.
 
 > **About this project.** This crate is built for Dead Money's internal game projects and was primarily authored by AI agents (Claude Code) driving an integration of an in-house Spine 4.2 runtime port into Bevy, with a human engineer directing scope, reviewing output, and steering architecture. It's published for transparency and for use inside Dead Money, not as a polished third-party plugin. APIs will shift, edge cases beyond what our own game needs may be unhandled, and documentation leans toward "what would a maintainer need?" rather than "what would a brand-new user expect?". If you adopt it anyway, expect to file issues and read source occasionally.
@@ -102,6 +106,25 @@ All examples live under `examples/`. They expect the upstream [`spine-runtimes`]
 - `cargo run --example spineboy_walk` — minimal "load, play, render" snippet. The shortest readable example of using the plugin.
 
 - `cargo run --example spineboy_screenshot` — headless-friendly sibling of `spineboy_walk`. Runs N frames then writes a PNG via Bevy's `Screenshot` API. Used in CI / for visual regression checks. `SPINE_SCREENSHOT` and `SPINE_SCREENSHOT_FRAMES` configure output.
+
+### Recording animated previews
+
+The browser also has a frame-sequence record mode for assembling animated previews like the GIF at the top of this README. Pin a rig + animation, set a window size, capture N frames into a directory, and stitch with ImageMagick / ffmpeg. The reference command used to produce `docs/celestial-circus-swing.gif` is:
+
+```sh
+mkdir -p /tmp/celestial_frames
+SPINE_BROWSER_RECORD_DIR=/tmp/celestial_frames \
+SPINE_BROWSER_RECORD_FRAMES=120 \
+SPINE_BROWSER_RECORD_WARMUP=45 \
+cargo run --example spine_browser -- \
+    --rig celestial-circus-pro --anim swing --width 640 --height 360
+
+# 60-frame, ~30 fps optimized GIF (~1 MB).
+ls /tmp/celestial_frames/frame_*.png | awk 'NR%2==1' | xargs \
+    convert -delay 3 -loop 0 -layers OptimizePlus docs/your-clip.gif
+```
+
+`SPINE_BROWSER_RECORD_WARMUP` exists so the live-fit camera has time to settle on the new rig before recording starts.
 
 ## Atlas expectations
 

@@ -41,6 +41,7 @@ use std::process::ExitCode;
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::window::WindowResolution;
 
 use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
 
@@ -81,6 +82,12 @@ struct Browser {
     /// Set when the active rig changes; used by the metadata-refresh
     /// system to re-pull animations / skins after the new asset loads.
     metadata_dirty: bool,
+    /// CLI-supplied animation name to start playing on first metadata
+    /// refresh (overrides the default of `animations[0]`). Cleared once
+    /// applied so subsequent rig changes use the default.
+    initial_anim: Option<String>,
+    /// CLI-supplied skin name to apply on first metadata refresh.
+    initial_skin: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,8 +115,51 @@ const VIEW_MARGIN: f32 = 1.15;
 const VIEW_LERP: f32 = 0.15;
 const MIN_VIEW_HEIGHT: f32 = 100.0;
 
+/// Parsed command-line arguments. Long forms only — `--key value` or `--key=value`.
+#[derive(Default, Debug, Clone)]
+struct Cli {
+    /// Asset root containing `<rig>/export/...`.
+    assets: Option<PathBuf>,
+    /// Substring filter to pre-select a rig at startup. Matches the
+    /// label, e.g. `--rig spineboy-pro` or `--rig celestial`.
+    rig: Option<String>,
+    /// Animation name to start playing once the rig loads. Falls back
+    /// to the first animation if absent or unknown.
+    anim: Option<String>,
+    /// Initial skin name (overrides `default`).
+    skin: Option<String>,
+    /// Window dimensions in physical pixels. Useful when recording so
+    /// the captured frames have a known size.
+    window_width: Option<u32>,
+    window_height: Option<u32>,
+}
+
+fn parse_cli() -> Cli {
+    let mut cli = Cli::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        let (key, value) = if let Some((k, v)) = a.split_once('=') {
+            (k.to_string(), Some(v.to_string()))
+        } else {
+            (a, args.next())
+        };
+        match key.as_str() {
+            "--assets" => cli.assets = value.map(PathBuf::from),
+            "--rig" => cli.rig = value,
+            "--anim" => cli.anim = value,
+            "--skin" => cli.skin = value,
+            "--width" => cli.window_width = value.and_then(|v| v.parse().ok()),
+            "--height" => cli.window_height = value.and_then(|v| v.parse().ok()),
+            _ => {}
+        }
+    }
+    cli
+}
+
 fn main() -> ExitCode {
-    let asset_root = match resolve_asset_root() {
+    let cli = parse_cli();
+
+    let asset_root = match resolve_asset_root(cli.assets.clone()) {
         Ok(p) => p,
         Err(message) => {
             eprintln!("{message}");
@@ -132,6 +182,33 @@ fn main() -> ExitCode {
         asset_root.display()
     );
 
+    // Apply --rig substring jump.
+    let initial_rig = cli
+        .rig
+        .as_ref()
+        .and_then(|needle| rigs.iter().position(|r| r.label.contains(needle.as_str())))
+        .unwrap_or(0);
+    if let Some(needle) = &cli.rig
+        && initial_rig == 0
+        && !rigs[0].label.contains(needle.as_str())
+    {
+        eprintln!(
+            "spine_browser: --rig {needle:?} matched no rig; starting at {}",
+            rigs[0].label
+        );
+    }
+
+    // Build the window plugin with optional fixed resolution.
+    let mut window_plugin = WindowPlugin::default();
+    if let (Some(w), Some(h)) = (cli.window_width, cli.window_height) {
+        window_plugin.primary_window = Some(Window {
+            resolution: WindowResolution::new(w, h),
+            title: "spine_browser".into(),
+            resizable: false,
+            ..Default::default()
+        });
+    }
+
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -139,12 +216,13 @@ fn main() -> ExitCode {
                 file_path: asset_root.to_string_lossy().into_owned(),
                 ..Default::default()
             })
-            .set(ImagePlugin::default_nearest()),
+            .set(ImagePlugin::default_nearest())
+            .set(window_plugin),
     )
     .add_plugins(SpinePlugin)
     .insert_resource(Browser {
         rigs,
-        current_rig: 0,
+        current_rig: initial_rig,
         animations: Vec::new(),
         current_animation: 0,
         skins: Vec::new(),
@@ -154,6 +232,8 @@ fn main() -> ExitCode {
         current_view: View::default(),
         target_view: View::default(),
         metadata_dirty: true,
+        initial_anim: cli.anim,
+        initial_skin: cli.skin,
     })
     .add_systems(Startup, setup)
     .add_systems(
@@ -166,7 +246,7 @@ fn main() -> ExitCode {
         ),
     );
 
-    // Optional screenshot driver — non-interactive PNG capture for CI / docs.
+    // Optional single-shot screenshot.
     if let Ok(path) = std::env::var("SPINE_BROWSER_SCREENSHOT") {
         let frames: u32 = std::env::var("SPINE_BROWSER_SCREENSHOT_FRAMES")
             .ok()
@@ -179,6 +259,29 @@ fn main() -> ExitCode {
             taken: false,
         });
         app.add_systems(Update, screenshot_driver);
+    }
+
+    // Optional frame-sequence recording for assembling animated GIFs.
+    if let Ok(dir) = std::env::var("SPINE_BROWSER_RECORD_DIR") {
+        let dir = PathBuf::from(dir);
+        let frames: u32 = std::env::var("SPINE_BROWSER_RECORD_FRAMES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(90);
+        let warmup: u32 = std::env::var("SPINE_BROWSER_RECORD_WARMUP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        std::fs::create_dir_all(&dir).expect("create record dir");
+        app.insert_resource(RecordConfig {
+            out_dir: dir,
+            target_frames: frames,
+            warmup_frames: warmup,
+            current_frame: 0,
+            captured: 0,
+            done_frame: None,
+        });
+        app.add_systems(Update, record_driver);
     }
 
     app.run();
@@ -217,10 +320,61 @@ fn screenshot_driver(
     }
 }
 
+/// Frame-sequence record driver: writes `frame_NNNN.png` into `out_dir`
+/// for `target_frames` frames after a `warmup_frames` settle period (lets
+/// the camera live-fit converge before recording starts). Exits after a
+/// grace period so async PNG writes flush.
+#[derive(Resource)]
+struct RecordConfig {
+    out_dir: PathBuf,
+    target_frames: u32,
+    warmup_frames: u32,
+    current_frame: u32,
+    captured: u32,
+    done_frame: Option<u32>,
+}
+
+fn record_driver(
+    mut commands: Commands,
+    mut cfg: ResMut<RecordConfig>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    cfg.current_frame += 1;
+    const EXIT_GRACE_FRAMES: u32 = 60;
+
+    if let Some(done) = cfg.done_frame {
+        if cfg.current_frame >= done + EXIT_GRACE_FRAMES {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+
+    if cfg.current_frame <= cfg.warmup_frames {
+        return;
+    }
+
+    let path = cfg
+        .out_dir
+        .join(format!("frame_{:04}.png", cfg.captured));
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path));
+    cfg.captured += 1;
+
+    if cfg.captured >= cfg.target_frames {
+        info!(
+            "spine_browser: captured {} frames into {}",
+            cfg.captured,
+            cfg.out_dir.display()
+        );
+        cfg.done_frame = Some(cfg.current_frame);
+    }
+}
+
 // ---- Asset-root + rig discovery ------------------------------------------
 
-fn resolve_asset_root() -> Result<PathBuf, String> {
-    if let Some(p) = parse_assets_arg() {
+fn resolve_asset_root(cli_assets: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(p) = cli_assets {
         return validate_root(p);
     }
     if let Ok(p) = std::env::var("SPINE_EXAMPLES_DIR") {
@@ -233,19 +387,6 @@ fn resolve_asset_root() -> Result<PathBuf, String> {
         }
     }
     Err(MISSING_ASSETS_HELP.to_string())
-}
-
-fn parse_assets_arg() -> Option<PathBuf> {
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        if a == "--assets" {
-            return args.next().map(PathBuf::from);
-        }
-        if let Some(rest) = a.strip_prefix("--assets=") {
-            return Some(PathBuf::from(rest));
-        }
-    }
-    None
 }
 
 fn validate_root(p: PathBuf) -> Result<PathBuf, String> {
@@ -523,11 +664,31 @@ fn refresh_metadata(mut browser: ResMut<Browser>, mut sk_query: Query<&mut Spine
     let anims: Vec<String> = anims.iter().map(|s| (*s).to_string()).collect();
     let skins: Vec<String> = skins.iter().map(|s| (*s).to_string()).collect();
 
+    // Honor `--anim` / `--skin` on first metadata refresh; fall back to
+    // index-0 if the requested name doesn't exist on the loaded rig.
+    if let Some(want) = browser.initial_anim.take()
+        && let Some(idx) = anims.iter().position(|n| n == &want)
+    {
+        browser.current_animation = idx;
+    }
+    if let Some(want) = browser.initial_skin.take()
+        && let Some(idx) = skins.iter().position(|n| n == &want)
+    {
+        browser.current_skin = idx;
+    }
+
     browser.current_animation = browser.current_animation.min(anims.len().saturating_sub(1));
     browser.current_skin = browser.current_skin.min(skins.len().saturating_sub(1));
     browser.metadata_dirty = false;
 
-    // Auto-play the first animation so the rig is moving when it appears.
+    if browser.current_skin > 0
+        && let Some(skin) = skins.get(browser.current_skin)
+        && let Err(err) = sk.set_skin(skin.clone())
+    {
+        warn!("spine_browser: initial set_skin({skin:?}) failed: {err:?}");
+    }
+
+    // Auto-play the chosen animation so the rig is moving when it appears.
     if let Some(anim) = anims.get(browser.current_animation).cloned() {
         sk.play(0, anim, true);
     }
