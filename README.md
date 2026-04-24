@@ -21,7 +21,7 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 
 ## Compatibility
 
-- **Bevy 0.18.x.** Pinned to a specific Bevy version because the rendering pipeline ties into `Material2d` specialization and the `Mesh2d` extraction model, both of which evolve across releases.
+- **Bevy 0.18.x.** Pinned to a specific Bevy version because the rendering pipeline ties into `Material2d` / `Material` specialization and the `Mesh2d` / `Mesh3d` extraction models, which evolve across releases.
 - **Spine 4.2** exports in either binary `.skel` or JSON `.json` format, paired with a `.atlas`.
 
 ## What's in the box
