@@ -36,13 +36,18 @@ use dm_spine_runtime::render::SkeletonRenderer;
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 use crate::asset::SpineSkeletonAsset;
-use crate::components::{SpineSkeleton, SpineSkeletonState};
+use crate::components::{SpineRender2d, SpineRender3d, SpineSkeleton, SpineSkeletonState};
 
 /// Stages run each frame on a [`SpineSkeleton`]. Gameplay code ordering
 /// itself `.before(SpineSet::Tick)` can mutate `time_scale` / queue
 /// animations on the same frame they take effect.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpineSet {
+    /// Backfill missing render-mode markers ([`SpineRender2d`] /
+    /// [`SpineRender3d`]) on freshly-spawned skeleton entities. Runs
+    /// before [`Self::Init`] so the marker is visible to every later
+    /// stage and to the marker-filtered mesh-build systems.
+    EnsureMarkers,
     /// First-frame construction of [`SpineSkeletonState`] once the asset
     /// finishes loading.
     Init,
@@ -113,9 +118,33 @@ pub fn initialize_spine_skeletons(
             events: Vec::new(),
             meshes: Vec::new(),
             materials: Vec::new(),
+            materials_3d: Vec::new(),
             children: Vec::new(),
         });
         commands.entity(entity).insert(SpineInitialized);
+    }
+}
+
+/// Backfill [`SpineRender2d`] on every [`SpineSkeleton`] that doesn't yet
+/// carry either render-mode marker. Keeps the default path
+/// (plain `commands.spawn(SpineSkeleton::new(...))`) rendering through the
+/// 2D pipeline, so existing code keeps compiling and working after 3D
+/// support lands. Runs before [`SpineSet::Init`] so the init stage and
+/// marker-filtered mesh-build systems see a consistent world state.
+#[allow(clippy::type_complexity)]
+pub fn ensure_spine_render_marker(
+    mut commands: Commands,
+    query: Query<
+        Entity,
+        (
+            With<SpineSkeleton>,
+            Without<SpineRender2d>,
+            Without<SpineRender3d>,
+        ),
+    >,
+) {
+    for entity in &query {
+        commands.entity(entity).insert(SpineRender2d);
     }
 }
 

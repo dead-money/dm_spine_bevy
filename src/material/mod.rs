@@ -25,6 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+pub mod shared;
 pub mod spine_material;
+pub mod spine_material_3d;
 
-pub use spine_material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterialKey};
+pub use shared::{SpineBlendMode, SpineColors, SpineMaterialKey};
+pub use spine_material::SpineMaterial;
+pub use spine_material_3d::SpineMaterial3d;

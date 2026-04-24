@@ -27,7 +27,7 @@
 
 //! Bevy 0.18 integration for [`dm_spine_runtime`].
 //!
-//! # Quick start
+//! # Quick start (2D)
 //!
 //! ```no_run
 //! use bevy::prelude::*;
@@ -51,21 +51,35 @@
 //!     .run();
 //! ```
 //!
+//! # Quick start (3D)
+//!
+//! Opt into the 3D pipeline by spawning a [`SpineRender3d`] marker
+//! alongside the [`SpineSkeleton`]; use a `Camera3d` instead of `Camera2d`.
+//! Positions emitted by the Spine runtime are 2D — the 3D backend lays
+//! them out in the skeleton's local XY plane (z = 0), so rotate the
+//! entity's `Transform` to stand the rig upright in a 3D scene. See
+//! `examples/spineboy_walk_3d.rs` for a complete example.
+//!
 //! # How it fits together
 //!
-//! [`SpinePlugin`] registers asset loaders, the [`SpineMaterial`]
-//! `Material2d` plugin, two `Message` types for animation events, and four
-//! ordered system stages:
+//! [`SpinePlugin`] registers asset loaders, both the [`SpineMaterial`]
+//! (`Material2d`) and [`SpineMaterial3d`] (`Material`) material plugins,
+//! two `Message` types for animation events, and five ordered system
+//! stages:
 //!
-//! 1. [`SpineSet::Init`] — observes assets that finished loading and
+//! 1. [`SpineSet::EnsureMarkers`] — backfills [`SpineRender2d`] on any
+//!    skeleton entity that doesn't carry a render-mode marker.
+//! 2. [`SpineSet::Init`] — observes assets that finished loading and
 //!    builds the per-instance runtime state.
-//! 2. [`SpineSet::Tick`] — advances animation time, applies timelines,
+//! 3. [`SpineSet::Tick`] — advances animation time, applies timelines,
 //!    re-integrates world transforms, emits the per-frame
 //!    `RenderCommand` stream into each skeleton's renderer. Parallel
 //!    over skeletons.
-//! 3. [`SpineSet::BuildMeshes`] — converts that command stream into
-//!    Bevy `Mesh` + `MeshMaterial2d<SpineMaterial>` children.
-//! 4. [`SpineSet::Events`] — drains lifecycle + keyframe events into
+//! 4. [`SpineSet::BuildMeshes`] — converts that command stream into
+//!    Bevy `Mesh` + `MeshMaterial2d<SpineMaterial>` (or
+//!    `MeshMaterial3d<SpineMaterial3d>`) children, depending on which
+//!    render-mode marker the parent carries.
+//! 5. [`SpineSet::Events`] — drains lifecycle + keyframe events into
 //!    [`SpineStateEvent`] / [`SpineKeyframeEvent`] writers.
 //!
 //! User systems can `.before(SpineSet::Tick)` to mutate `time_scale` or
@@ -73,7 +87,7 @@
 //!
 //! # Atlas expectations
 //!
-//! The shipped material assumes premultiplied-alpha textures. Spine
+//! The shipped materials assume premultiplied-alpha textures. Spine
 //! exports usually ship `*-pma.atlas` / `*-pma.png` variants alongside
 //! straight-alpha pairs; prefer the PMA variant via
 //! [`SpineSkeletonLoaderSettings::atlas_path`].
@@ -81,6 +95,7 @@
 //! [`dm_spine_runtime`]: https://github.com/dead-money/dm_spine_runtime
 
 use bevy::asset::AssetApp;
+use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::sprite_render::Material2dPlugin;
 
@@ -95,12 +110,14 @@ pub use asset::{
     SpineSkeletonJsonLoader, SpineSkeletonJsonLoaderError, SpineSkeletonJsonLoaderSettings,
     SpineSkeletonLoader, SpineSkeletonLoaderError, SpineSkeletonLoaderSettings,
 };
-pub use components::{PendingAnimation, SpineSkeleton, SpineSkeletonState};
-pub use material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterialKey};
-pub use mesh::build_spine_meshes;
+pub use components::{
+    PendingAnimation, SpineRender2d, SpineRender3d, SpineSkeleton, SpineSkeletonState,
+};
+pub use material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterial3d, SpineMaterialKey};
+pub use mesh::{build_spine_meshes, build_spine_meshes_3d};
 pub use systems::{
     SpineInitialized, SpineKeyframeEvent, SpineSet, SpineStateEvent, drain_spine_events,
-    initialize_spine_skeletons, tick_spine_skeletons,
+    ensure_spine_render_marker, initialize_spine_skeletons, tick_spine_skeletons,
 };
 
 /// Bevy plugin entry point. Register once during `App` setup; spawns
@@ -111,6 +128,7 @@ pub struct SpinePlugin;
 impl Plugin for SpinePlugin {
     fn build(&self, app: &mut App) {
         material::spine_material::register_spine_shader(app);
+        material::spine_material_3d::register_spine_shader_3d(app);
 
         app.init_asset::<SpineAtlasAsset>()
             .init_asset::<SpineSkeletonAsset>()
@@ -118,11 +136,13 @@ impl Plugin for SpinePlugin {
             .init_asset_loader::<SpineSkeletonLoader>()
             .init_asset_loader::<SpineSkeletonJsonLoader>()
             .add_plugins(Material2dPlugin::<SpineMaterial>::default())
+            .add_plugins(MaterialPlugin::<SpineMaterial3d>::default())
             .add_message::<SpineStateEvent>()
             .add_message::<SpineKeyframeEvent>()
             .configure_sets(
                 Update,
                 (
+                    SpineSet::EnsureMarkers,
                     SpineSet::Init,
                     SpineSet::Tick,
                     SpineSet::BuildMeshes,
@@ -133,9 +153,11 @@ impl Plugin for SpinePlugin {
             .add_systems(
                 Update,
                 (
+                    ensure_spine_render_marker.in_set(SpineSet::EnsureMarkers),
                     initialize_spine_skeletons.in_set(SpineSet::Init),
                     tick_spine_skeletons.in_set(SpineSet::Tick),
                     build_spine_meshes.in_set(SpineSet::BuildMeshes),
+                    build_spine_meshes_3d.in_set(SpineSet::BuildMeshes),
                     drain_spine_events.in_set(SpineSet::Events),
                 ),
             );
