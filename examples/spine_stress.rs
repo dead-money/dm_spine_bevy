@@ -51,6 +51,7 @@ use std::time::Instant;
 use bevy::asset::AssetPlugin;
 use bevy::diagnostic::{Diagnostic, DiagnosticPath, Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::{PresentMode, WindowResolution};
 
 use dm_spine_bevy::{SpinePlugin, SpineSet, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
@@ -61,9 +62,15 @@ const TICK_MS: DiagnosticPath = DiagnosticPath::const_new("dm_spine_bevy/tick_ms
 /// Diagnostic path for the per-frame `SpineSet::BuildMeshes` duration.
 const BUILD_MS: DiagnosticPath = DiagnosticPath::const_new("dm_spine_bevy/build_meshes_ms");
 
-const DEFAULT_COUNT: usize = 100;
-const SCALE_FACTOR: f32 = 1.5;
+/// Default initial count. The example always presents a perfect-square
+/// grid centered on the origin, growing in N² steps.
+const DEFAULT_COUNT: usize = 1;
 const GRID_CELL_PADDING: f32 = 1.05;
+
+/// Round `count` down to the nearest perfect square's root.
+fn grid_root_of(count: usize) -> usize {
+    (count as f32).sqrt().round().max(1.0) as usize
+}
 
 #[derive(Default, Debug, Clone)]
 struct Cli {
@@ -114,6 +121,11 @@ struct StressConfig {
     /// Per-instance grid spacing in world units. Computed once after the
     /// first skeleton's bounds settle, then reused.
     cell_size: Option<Vec2>,
+    /// Centroid of the rig's bounding box in attachment-local space.
+    /// Subtracted from each grid cell's center to place the *visible body*
+    /// at the cell center rather than the bone origin (which sits at the
+    /// rig's feet for spineboy-style rigs).
+    bbox_centroid: Vec2,
 }
 
 #[derive(Resource, Default)]
@@ -220,9 +232,12 @@ fn main() -> ExitCode {
     .add_plugins(FrameTimeDiagnosticsPlugin::default())
     .insert_resource(StressConfig {
         rig,
-        anim_override: cli.anim,
+        // Default to spineboy's `run` so the demo looks like the
+        // stampede the stress test wants. CLI --anim wins.
+        anim_override: cli.anim.or_else(|| Some("run".to_string())),
         initial_count,
         cell_size: None,
+        bbox_centroid: Vec2::ZERO,
     })
     .insert_resource(StressState {
         target_count: initial_count,
@@ -234,6 +249,21 @@ fn main() -> ExitCode {
     if let Some(w) = csv_writer {
         app.insert_resource(w);
         app.add_systems(Update, write_csv_row);
+    }
+
+    // Optional one-shot screenshot for docs / smoke verification.
+    if let Ok(path) = std::env::var("SPINE_STRESS_SCREENSHOT") {
+        let frames: u32 = std::env::var("SPINE_STRESS_SCREENSHOT_FRAMES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+        app.insert_resource(StressScreenshotConfig {
+            path,
+            trigger_frame: frames,
+            current_frame: 0,
+            taken: false,
+        });
+        app.add_systems(Update, stress_screenshot_driver);
     }
 
     app
@@ -258,6 +288,36 @@ fn main() -> ExitCode {
         .run();
 
     ExitCode::SUCCESS
+}
+
+#[derive(Resource)]
+struct StressScreenshotConfig {
+    path: String,
+    trigger_frame: u32,
+    current_frame: u32,
+    taken: bool,
+}
+
+fn stress_screenshot_driver(
+    mut commands: Commands,
+    mut cfg: ResMut<StressScreenshotConfig>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    cfg.current_frame += 1;
+    const EXIT_GRACE_FRAMES: u32 = 30;
+    if cfg.taken {
+        if cfg.current_frame >= cfg.trigger_frame + EXIT_GRACE_FRAMES {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    if cfg.current_frame >= cfg.trigger_frame {
+        let path = cfg.path.clone();
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+        cfg.taken = true;
+    }
 }
 
 fn register_diagnostics(mut store: ResMut<DiagnosticsStore>) {
@@ -300,14 +360,14 @@ fn handle_input(
         exit.write(AppExit::Success);
         return;
     }
-    if keys.just_pressed(KeyCode::ArrowUp) {
-        state.target_count = ((state.target_count as f32 * SCALE_FACTOR).ceil() as usize).max(1);
+    if keys.just_pressed(KeyCode::BracketRight) {
+        let root = grid_root_of(state.target_count);
+        state.target_count = (root + 1).pow(2);
     }
-    if keys.just_pressed(KeyCode::ArrowDown) {
-        state.target_count = ((state.target_count as f32 / SCALE_FACTOR).ceil() as usize).max(1);
-    }
-    if keys.just_pressed(KeyCode::Digit0) {
-        state.target_count = (state.target_count / 2).max(1);
+    if keys.just_pressed(KeyCode::BracketLeft) {
+        let root = grid_root_of(state.target_count);
+        let next = root.saturating_sub(1).max(1);
+        state.target_count = next.pow(2);
     }
     if keys.just_pressed(KeyCode::KeyR) {
         state.target_count = cfg.initial_count;
@@ -352,6 +412,7 @@ fn measure_cell_size(
         let w = ((xmax - xmin) * GRID_CELL_PADDING).max(64.0);
         let h = ((ymax - ymin) * GRID_CELL_PADDING).max(64.0);
         cfg.cell_size = Some(Vec2::new(w, h));
+        cfg.bbox_centroid = Vec2::new((xmin + xmax) * 0.5, (ymin + ymax) * 0.5);
     }
 }
 
@@ -362,6 +423,7 @@ fn converge_population(
     asset_server: Res<AssetServer>,
     cameras: Query<&mut Projection, With<Camera2d>>,
     mut camera_transforms: Query<&mut Transform, With<Camera2d>>,
+    mut transforms: Query<&mut Transform, (With<SpineSkeleton>, Without<Camera2d>)>,
 ) {
     // Always have at least one skeleton spawned so cell-size measurement
     // can converge.
@@ -369,6 +431,18 @@ fn converge_population(
         spawn_one(&mut commands, &cfg, &mut state, &asset_server, Vec2::ZERO);
     }
     let cell = cfg.cell_size.unwrap_or(Vec2::splat(300.0));
+    let centroid = cfg.bbox_centroid;
+
+    // Reposition every existing entity into the slot it would occupy at
+    // the current target_count. Cheap (one Transform write per skeleton)
+    // and means resizes flow into the new grid immediately.
+    for (idx, &entity) in state.spawned.iter().enumerate() {
+        let pos = grid_position(idx, state.target_count, cell) - centroid;
+        if let Ok(mut t) = transforms.get_mut(entity) {
+            t.translation.x = pos.x;
+            t.translation.y = pos.y;
+        }
+    }
 
     // Adjust population toward target. Spawn / despawn in batches of up
     // to 64 per frame to avoid huge frame-time spikes.
@@ -378,7 +452,7 @@ fn converge_population(
         let to_spawn = (state.target_count - current).min(BATCH);
         for _ in 0..to_spawn {
             let idx = state.spawned.len();
-            let pos = grid_position(idx, state.target_count, cell);
+            let pos = grid_position(idx, state.target_count, cell) - centroid;
             spawn_one(&mut commands, &cfg, &mut state, &asset_server, pos);
         }
     } else if current > state.target_count {
@@ -389,30 +463,22 @@ fn converge_population(
         }
     }
 
-    // Re-aim the camera at the centroid of the grid each time the
-    // population stabilises and resize to fit.
-    if state.spawned.len() == state.target_count {
-        let n = state.target_count;
-        if n > 0 {
-            let cols = grid_cols(n);
-            let rows = n.div_ceil(cols);
-            let center = Vec2::new(
-                cell.x * (cols as f32 - 1.0) * 0.5,
-                -cell.y * (rows as f32 - 1.0) * 0.5,
-            );
-            for mut t in camera_transforms.iter_mut() {
-                t.translation.x = center.x;
-                t.translation.y = center.y;
-            }
-            // Fit projection to grid extent + a small margin.
-            let view_height = (cell.y * rows as f32 * 1.1).max(cell.y * 1.1);
-            for mut p in cameras {
-                if let Projection::Orthographic(ortho) = &mut *p {
-                    ortho.scaling_mode = bevy::camera::ScalingMode::FixedVertical {
-                        viewport_height: view_height,
-                    };
-                    ortho.scale = 1.0;
-                }
+    // The grid is centered on the origin, so the camera stays put.
+    // Just refit the orthographic projection so the full grid is visible
+    // with a margin once the population settles.
+    if state.spawned.len() == state.target_count && state.target_count > 0 {
+        let root = grid_root_of(state.target_count);
+        let view_height = cell.y * root as f32 * 1.1;
+        for mut t in camera_transforms.iter_mut() {
+            t.translation.x = 0.0;
+            t.translation.y = 0.0;
+        }
+        for mut p in cameras {
+            if let Projection::Orthographic(ortho) = &mut *p {
+                ortho.scaling_mode = bevy::camera::ScalingMode::FixedVertical {
+                    viewport_height: view_height,
+                };
+                ortho.scale = 1.0;
             }
         }
     }
@@ -453,7 +519,6 @@ fn spawn_one(
 fn seed_time_offsets(
     mut commands: Commands,
     mut q: Query<(Entity, &mut SpineSkeleton, &NeedsTimeOffset)>,
-    cfg: Res<StressConfig>,
 ) {
     for (entity, mut sk, NeedsTimeOffset(offset)) in &mut q {
         // Need state to exist *and* an animation to have been applied
@@ -465,8 +530,10 @@ fn seed_time_offsets(
         if !ready {
             continue;
         }
-        if cfg.anim_override.is_none()
-            && let Some(state) = sk.state.as_mut()
+        // The pending animation may have failed (e.g. the rig doesn't
+        // have the requested name); fall back to the first declared
+        // animation so something is always playing.
+        if let Some(state) = sk.state.as_mut()
             && state.animation_state.current(0).is_none()
             && let Some(anim) = state.animation_state.skeleton_data().animations.first()
         {
@@ -480,15 +547,17 @@ fn seed_time_offsets(
     }
 }
 
-fn grid_cols(n: usize) -> usize {
-    (n as f32).sqrt().ceil() as usize
-}
-
+/// Place `index` (0..total) in a square grid centered on the origin.
+/// `total` is rounded up to the next perfect square so each row has the
+/// same column count and the grid stays symmetric. Excess slots in the
+/// final row are simply unused.
 fn grid_position(index: usize, total: usize, cell: Vec2) -> Vec2 {
-    let cols = grid_cols(total);
+    let cols = grid_root_of(total);
     let row = index / cols;
     let col = index % cols;
-    Vec2::new(col as f32 * cell.x, -(row as f32) * cell.y)
+    let x = (col as f32 - (cols as f32 - 1.0) * 0.5) * cell.x;
+    let y = -((row as f32 - (cols as f32 - 1.0) * 0.5) * cell.y);
+    Vec2::new(x, y)
 }
 
 // ---- Stage timing --------------------------------------------------------
@@ -543,11 +612,13 @@ fn update_hud(
         .and_then(Diagnostic::smoothed)
         .unwrap_or(0.0);
 
+    let root = grid_root_of(state.target_count);
     let header = format!(
-        "rig: {}\ncount: {} (target {})\nfps: {fps:6.1}\nframe: {frame_ms:5.2} ms\ntick:  {tick_ms:5.2} ms\nbuild: {build_ms:5.2} ms\n\n[↑/↓] scale ×1.5 / ÷1.5  [0] half  [R] reset  [Esc] quit",
+        "rig: {}\ncount: {} ({}x{} target)\nfps: {fps:6.1}\nframe: {frame_ms:5.2} ms\ntick:  {tick_ms:5.2} ms\nbuild: {build_ms:5.2} ms\n\n[ ] ] grow / shrink one perfect square  [R] reset  [Esc] quit",
         cfg.rig.label,
         state.spawned.len(),
-        state.target_count,
+        root,
+        root,
     );
     text.0 = header;
 }
