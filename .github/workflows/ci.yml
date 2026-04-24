@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Opt in to Node 24 for any JS-based actions. Node 20 is deprecated
+  # and will be forced off by GitHub in June 2026; this flips the
+  # switch early so we're running on the same Node they'll default to.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   test:
@@ -16,14 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout dm_spine_bevy
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: dm_spine_bevy
 
       # Path-dep on dm_spine_runtime as a sibling clone; matches the
       # workspace layout documented in dm_spine_bevy/Cargo.toml.
       - name: Checkout dm_spine_runtime
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: dead-money/dm_spine_runtime
           path: dm_spine_runtime
@@ -33,7 +37,7 @@ jobs:
       # path-dep above). Examples themselves are not exercised by
       # `cargo test` but the dep tree must compile.
       - name: Checkout spine-runtimes (upstream)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: EsotericSoftware/spine-runtimes
           path: spine-runtimes
