@@ -32,59 +32,46 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use dm_spine_runtime::data::SkeletonData;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, BinaryError, SkeletonBinary};
+use dm_spine_runtime::load::{AtlasAttachmentLoader, JsonError, SkeletonJson};
 
 use crate::asset::atlas_loader::SpineAtlasAsset;
+use crate::asset::skel_loader::SpineSkeletonAsset;
 
-/// Spine skeleton asset wrapping the shared `Arc<SkeletonData>` and a handle
-/// to the atlas it was loaded against. Instances clone the `Arc` cheaply.
-#[derive(Asset, TypePath, Debug)]
-pub struct SpineSkeletonAsset {
-    /// Immutable parsed skeleton data. Shared across all `Skeleton` instances
-    /// spawned from this asset.
-    pub data: Arc<SkeletonData>,
-    /// Handle to the atlas used during attachment resolution. The Bevy-side
-    /// renderer uses this to pull `Vec<Handle<Image>>` for page lookups.
-    pub atlas: Handle<SpineAtlasAsset>,
-}
-
-/// Per-load overrides for the skeleton loader. When `atlas_path` is `None`
-/// (the default), the loader derives the atlas path from the skeleton's
-/// filename stem — stripping trailing `-pro`/`-ess`/`-ios` suffixes where
-/// present, then appending `.atlas`. This matches the naming convention used
-/// by every rig under `spine-runtimes/examples/`.
+/// Per-load overrides for the JSON skeleton loader. When `atlas_path` is
+/// `None` (the default), the loader derives the atlas path from the
+/// skeleton's filename stem — the same convention used by the binary
+/// `.skel` loader (`spineboy-pro.json` -> `spineboy.atlas`).
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct SpineSkeletonLoaderSettings {
+pub struct SpineSkeletonJsonLoaderSettings {
     /// Absolute asset path of the atlas, or `None` to auto-derive.
     pub atlas_path: Option<String>,
     /// Uniform scale applied to vertex coordinates at load time. `None` keeps
-    /// the skeleton's native scale. Forwarded to `SkeletonBinary::with_scale`.
+    /// the skeleton's native scale. Forwarded to `SkeletonJson::with_scale`.
     pub scale: Option<f32>,
 }
 
-/// Bevy asset loader for `.skel` files. Loads the companion atlas
-/// (resolved via [`SpineSkeletonLoaderSettings::atlas_path`] or derived
-/// from the skeleton's filename stem), runs the binary skeleton parser
-/// against it, and yields a [`SpineSkeletonAsset`].
+/// Bevy asset loader for `.json` skeleton files. Loads the companion atlas
+/// the same way the `.skel` loader does and yields a [`SpineSkeletonAsset`]
+/// — the asset type is shared so both formats plug into the rest of the
+/// pipeline identically.
 #[derive(Default, TypePath)]
-pub struct SpineSkeletonLoader;
+pub struct SpineSkeletonJsonLoader;
 
 #[derive(Debug, Error)]
-pub enum SpineSkeletonLoaderError {
+pub enum SpineSkeletonJsonLoaderError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("could not derive atlas path from skeleton path {0:?}")]
     AtlasPathDerivation(String),
     #[error("failed to load companion atlas {0:?}: {1}")]
     AtlasLoad(String, String),
-    #[error("binary skeleton parse error: {0}")]
-    Parse(#[from] BinaryError),
+    #[error("json skeleton parse error: {0}")]
+    Parse(#[from] JsonError),
     #[error("asset path parse error: {0}")]
     Path(#[from] bevy::asset::ParseAssetPathError),
 }
 
-impl From<super::AtlasDeriveError> for SpineSkeletonLoaderError {
+impl From<super::AtlasDeriveError> for SpineSkeletonJsonLoaderError {
     fn from(e: super::AtlasDeriveError) -> Self {
         match e {
             super::AtlasDeriveError::BadStem(s) => Self::AtlasPathDerivation(s),
@@ -93,10 +80,10 @@ impl From<super::AtlasDeriveError> for SpineSkeletonLoaderError {
     }
 }
 
-impl AssetLoader for SpineSkeletonLoader {
+impl AssetLoader for SpineSkeletonJsonLoader {
     type Asset = SpineSkeletonAsset;
-    type Settings = SpineSkeletonLoaderSettings;
-    type Error = SpineSkeletonLoaderError;
+    type Settings = SpineSkeletonJsonLoaderSettings;
+    type Error = SpineSkeletonJsonLoaderError;
 
     async fn load(
         &self,
@@ -109,11 +96,6 @@ impl AssetLoader for SpineSkeletonLoader {
 
         let atlas_path = resolve_atlas_path(load_context.path(), settings.atlas_path.as_deref())?;
 
-        // Two loads on the same path: the `immediate` load gives us the owned
-        // atlas value (needed to run the attachment loader here, synchronously),
-        // and the `deferred` load yields a `Handle<SpineAtlasAsset>` we stash on
-        // the asset for downstream texture-handle resolution. The asset server
-        // dedupes these — same path, one load.
         let atlas_handle: Handle<SpineAtlasAsset> = load_context.load(atlas_path.clone());
 
         let loaded_atlas = load_context
@@ -122,16 +104,16 @@ impl AssetLoader for SpineSkeletonLoader {
             .load::<SpineAtlasAsset>(atlas_path.clone())
             .await
             .map_err(|e| {
-                SpineSkeletonLoaderError::AtlasLoad(atlas_path.to_string(), e.to_string())
+                SpineSkeletonJsonLoaderError::AtlasLoad(atlas_path.to_string(), e.to_string())
             })?;
         let atlas_asset = loaded_atlas.get();
         let mut attachment_loader = AtlasAttachmentLoader::new(&atlas_asset.atlas);
 
-        let mut binary = SkeletonBinary::with_loader(&mut attachment_loader);
+        let mut json = SkeletonJson::with_loader(&mut attachment_loader);
         if let Some(scale) = settings.scale {
-            binary = binary.with_scale(scale);
+            json = json.with_scale(scale);
         }
-        let data = binary.read(&bytes)?;
+        let data = json.read_slice(&bytes)?;
 
         Ok(SpineSkeletonAsset {
             data: Arc::new(data),
@@ -140,18 +122,15 @@ impl AssetLoader for SpineSkeletonLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["skel"]
+        &["json"]
     }
 }
 
-/// Derive the atlas asset path for a `.skel` path, honouring an explicit
-/// override. Strip common rig-suffix variants (`-pro`, `-ess`, `-ios`) before
-/// appending `.atlas`: `spineboy-pro.skel` -> `spineboy.atlas`.
 fn resolve_atlas_path(
-    skel_path: &AssetPath<'static>,
+    json_path: &AssetPath<'static>,
     override_path: Option<&str>,
-) -> Result<AssetPath<'static>, SpineSkeletonLoaderError> {
-    super::derive_atlas_path(skel_path, override_path).map_err(Into::into)
+) -> Result<AssetPath<'static>, SpineSkeletonJsonLoaderError> {
+    super::derive_atlas_path(json_path, override_path).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -165,8 +144,8 @@ mod tests {
 
     #[test]
     fn strips_pro_suffix() {
-        let skel = make_path("rigs/spineboy/export/spineboy-pro.skel");
-        let atlas = resolve_atlas_path(&skel, None).unwrap();
+        let j = make_path("rigs/spineboy/export/spineboy-pro.json");
+        let atlas = resolve_atlas_path(&j, None).unwrap();
         assert_eq!(
             atlas.path().to_str(),
             Some("rigs/spineboy/export/spineboy.atlas")
@@ -174,23 +153,9 @@ mod tests {
     }
 
     #[test]
-    fn strips_ess_suffix() {
-        let skel = make_path("rigs/spineboy-ess.skel");
-        let atlas = resolve_atlas_path(&skel, None).unwrap();
-        assert_eq!(atlas.path().to_str(), Some("rigs/spineboy.atlas"));
-    }
-
-    #[test]
-    fn keeps_unsuffixed_stem() {
-        let skel = make_path("rigs/raptor.skel");
-        let atlas = resolve_atlas_path(&skel, None).unwrap();
-        assert_eq!(atlas.path().to_str(), Some("rigs/raptor.atlas"));
-    }
-
-    #[test]
     fn honours_override() {
-        let skel = make_path("rigs/spineboy-pro.skel");
-        let atlas = resolve_atlas_path(&skel, Some("packs/hero.atlas")).unwrap();
+        let j = make_path("rigs/spineboy-pro.json");
+        let atlas = resolve_atlas_path(&j, Some("packs/hero.atlas")).unwrap();
         assert_eq!(atlas.path().to_str(), Some("packs/hero.atlas"));
     }
 }

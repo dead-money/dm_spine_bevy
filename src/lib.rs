@@ -92,6 +92,7 @@ pub mod systems;
 
 pub use asset::{
     SpineAtlasAsset, SpineAtlasLoader, SpineAtlasLoaderError, SpineSkeletonAsset,
+    SpineSkeletonJsonLoader, SpineSkeletonJsonLoaderError, SpineSkeletonJsonLoaderSettings,
     SpineSkeletonLoader, SpineSkeletonLoaderError, SpineSkeletonLoaderSettings,
 };
 pub use components::{PendingAnimation, SpineSkeleton, SpineSkeletonState};
@@ -115,6 +116,7 @@ impl Plugin for SpinePlugin {
             .init_asset::<SpineSkeletonAsset>()
             .init_asset_loader::<SpineAtlasLoader>()
             .init_asset_loader::<SpineSkeletonLoader>()
+            .init_asset_loader::<SpineSkeletonJsonLoader>()
             .add_plugins(Material2dPlugin::<SpineMaterial>::default())
             .add_message::<SpineStateEvent>()
             .add_message::<SpineKeyframeEvent>()
