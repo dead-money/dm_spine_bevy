@@ -41,14 +41,17 @@ use bevy::prelude::*;
 use dm_spine_bevy::{SpinePlugin, SpineSkeleton, SpineSkeletonAsset, SpineSkeletonLoaderSettings};
 
 fn main() {
+    // Bevy resolves AssetPlugin::file_path relative to the executable's
+    // directory at runtime, not the project root, so canonicalize first.
+    let asset_root = std::path::PathBuf::from("../spine-runtimes/examples")
+        .canonicalize()
+        .expect("spine-runtimes/examples must exist as a sibling clone");
+
     App::new()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
-                    // Point at the vendored upstream spine-runtimes examples
-                    // directory. Paths in `asset_server.load(...)` below are
-                    // relative to this root.
-                    file_path: "../spine-runtimes/examples".to_string(),
+                    file_path: asset_root.to_string_lossy().into_owned(),
                     ..Default::default()
                 })
                 .set(ImagePlugin::default_nearest()),

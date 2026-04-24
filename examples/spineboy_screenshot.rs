@@ -41,11 +41,15 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(60);
 
+    let asset_root = std::path::PathBuf::from("../spine-runtimes/examples")
+        .canonicalize()
+        .expect("spine-runtimes/examples must exist as a sibling clone");
+
     App::new()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
-                    file_path: "../spine-runtimes/examples".to_string(),
+                    file_path: asset_root.to_string_lossy().into_owned(),
                     ..Default::default()
                 })
                 .set(ImagePlugin::default_nearest()),

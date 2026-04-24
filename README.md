@@ -107,6 +107,8 @@ All examples live under `examples/`. They expect the upstream [`spine-runtimes`]
 
 - `cargo run --example spineboy_screenshot` — headless-friendly sibling of `spineboy_walk`. Runs N frames then writes a PNG via Bevy's `Screenshot` API. Used in CI / for visual regression checks. `SPINE_SCREENSHOT` and `SPINE_SCREENSHOT_FRAMES` configure output.
 
+- `cargo run --release --example spine_stress` — stress test. Spawns N skeletons (default 100) in a grid and reports `fps / tick_ms / build_ms` in the HUD via Bevy diagnostics. Up/Down arrows scale N by 1.5×; **0** halves; **R** resets. Run with `--release` — debug builds skew the numbers heavily. CSV export: `--csv path.csv` writes `frame,count,fps,tick_ms,build_ms` per frame. On the dev machine (RTX 4090 + i9-14900K) the runtime + Bevy integration sustain ~1500 walking spineboys before frame drops at 60 Hz vsync; per-skeleton cost is ~10 µs CPU at scale (tick + mesh-build).
+
 ### Recording animated previews
 
 The browser also has a frame-sequence record mode for assembling animated previews like the GIF at the top of this README. Pin a rig + animation, set a window size, capture N frames into a directory, and stitch with ImageMagick / ffmpeg. The reference command used to produce `docs/celestial-circus-swing.gif` is:

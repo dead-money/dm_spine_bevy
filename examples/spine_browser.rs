@@ -383,21 +383,25 @@ fn resolve_asset_root(cli_assets: Option<PathBuf>) -> Result<PathBuf, String> {
     for fallback in ["../spine-runtimes/examples", "./spine-runtimes/examples"] {
         let p = PathBuf::from(fallback);
         if p.is_dir() {
-            return Ok(p);
+            return validate_root(p);
         }
     }
     Err(MISSING_ASSETS_HELP.to_string())
 }
 
 fn validate_root(p: PathBuf) -> Result<PathBuf, String> {
-    if p.is_dir() {
-        Ok(p)
-    } else {
-        Err(format!(
+    if !p.is_dir() {
+        return Err(format!(
             "spine_browser: --assets path {} does not exist or is not a directory",
             p.display()
-        ))
+        ));
     }
+    p.canonicalize().map_err(|e| {
+        format!(
+            "spine_browser: cannot canonicalize asset path {}: {e}",
+            p.display()
+        )
+    })
 }
 
 const MISSING_ASSETS_HELP: &str = "spine_browser: could not find Spine example rigs.
