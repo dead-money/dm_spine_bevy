@@ -26,37 +26,40 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::mesh::{Indices, Mesh3d, PrimitiveTopology, VertexAttributeValues};
+use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::sprite_render::MeshMaterial2d;
 
 use dm_spine_runtime::render::RenderCommand;
 
 use crate::asset::SpineAtlasAsset;
-use crate::components::SpineSkeleton;
-use crate::material::{SpineBlendMode, SpineColors, SpineMaterial};
+use crate::components::{SpineRender2d, SpineRender3d, SpineSkeleton, SpineSkeletonState};
+use crate::material::{SpineBlendMode, SpineColors, SpineMaterial, SpineMaterial3d};
 
-/// Small per-command Z offset applied to child mesh transforms so the
-/// `Transparent2d` phase preserves the runtime's back-to-front command
-/// order. Commands emitted later by `SkeletonRenderer::commands()` sit in
-/// front of earlier ones.
+/// Small per-command Z offset applied to child mesh transforms. The 2D
+/// pipeline's `Transparent2d` phase sorts by z, preserving the runtime's
+/// back-to-front command order. The 3D pipeline's `Transparent3d` phase
+/// sorts by camera distance, so this offset still separates slots along
+/// the skeleton's local Z axis — depth writes are disabled in
+/// [`SpineMaterial3d::specialize`] to avoid z-fighting between slots.
 const Z_OFFSET_PER_COMMAND: f32 = 0.001;
 
-/// (Re)builds Bevy meshes + materials for every initialized skeleton
-/// each frame. Runs in [`crate::SpineSet::BuildMeshes`], after the tick
-/// stage populated `SkeletonRenderer`'s internal command buffer.
+/// (Re)builds Bevy meshes + materials for every initialized 2D skeleton
+/// each frame. Filters on [`SpineRender2d`] so the 3D sibling
+/// ([`build_spine_meshes_3d`]) operates on disjoint entities. Runs in
+/// [`crate::SpineSet::BuildMeshes`], after the tick stage populated
+/// `SkeletonRenderer`'s internal command buffer.
 ///
-/// Per-skeleton state holds an index-parallel `Vec<Entity>` /
-/// `Vec<Handle<Mesh>>` / `Vec<Handle<SpineMaterial>>`, one entry per
-/// `RenderCommand` slot. Mesh attribute buffers are reused across frames
-/// (cleared and re-extended in place); new child entities are spawned
-/// only when the command count grows; children past the current command
-/// count are hidden rather than despawned so subsequent growth reuses
-/// them.
-#[allow(clippy::too_many_arguments)]
+/// Per-skeleton state holds index-parallel vecs of child entities,
+/// `Mesh` handles, and `SpineMaterial` handles — one entry per
+/// `RenderCommand` slot. Mesh attribute buffers are reused across frames;
+/// new child entities are spawned only when the command count grows;
+/// children past the current command count are hidden rather than
+/// despawned so subsequent growth reuses them.
 pub fn build_spine_meshes(
     mut commands: Commands,
-    mut query: Query<(Entity, &mut SpineSkeleton)>,
+    mut query: Query<(Entity, &mut SpineSkeleton), With<SpineRender2d>>,
     atlases: Res<Assets<SpineAtlasAsset>>,
     skeleton_assets: Res<Assets<crate::asset::SpineSkeletonAsset>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -75,7 +78,7 @@ pub fn build_spine_meshes(
         };
 
         let cmd_count = state.renderer.commands().len();
-        grow_child_buffers(
+        grow_child_buffers_2d(
             &mut commands,
             entity,
             state,
@@ -84,10 +87,6 @@ pub fn build_spine_meshes(
             &mut materials,
         );
 
-        // `commands()` returns &[RenderCommand]; we need the slice twice
-        // (once for the for-loop, once for the shrink loop) but re-borrow
-        // mutably in between via Assets::get_mut — so copy the length up
-        // top and borrow the slice only inside the loop iterations.
         for i in 0..cmd_count {
             let cmd = &state.renderer.commands()[i];
             let tex = atlas
@@ -101,10 +100,7 @@ pub fn build_spine_meshes(
             }
             if let Some(mat) = materials.get_mut(&state.materials[i]) {
                 mat.texture = tex;
-                mat.colors = SpineColors {
-                    light: unpack_argb(cmd.colors.first().copied().unwrap_or(0xffff_ffff)),
-                    dark: unpack_argb(cmd.dark_colors.first().copied().unwrap_or(0xff00_0000)),
-                };
+                mat.colors = colors_from_command(cmd);
                 mat.blend_mode = SpineBlendMode::from(cmd.blend_mode);
             }
             if let Ok(mut vis) = child_vis.get_mut(state.children[i]) {
@@ -112,7 +108,71 @@ pub fn build_spine_meshes(
             }
         }
 
-        // Hide any trailing children that have no command this frame.
+        for &child in &state.children[cmd_count..] {
+            if let Ok(mut vis) = child_vis.get_mut(child) {
+                *vis = Visibility::Hidden;
+            }
+        }
+    }
+}
+
+/// 3D sibling of [`build_spine_meshes`]. Filters on [`SpineRender3d`] and
+/// spawns child entities with `(Mesh3d, MeshMaterial3d<SpineMaterial3d>)`
+/// instead of the `Mesh2d` / `MeshMaterial2d` pair. The mesh-write path
+/// (positions / UVs / indices) is identical — Spine runtime positions are
+/// 2D, laid out as `(x, y, 0)` in the skeleton's local XY plane. Rotate
+/// the entity's `Transform` to place the skeleton upright in a 3D scene.
+pub fn build_spine_meshes_3d(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut SpineSkeleton), With<SpineRender3d>>,
+    atlases: Res<Assets<SpineAtlasAsset>>,
+    skeleton_assets: Res<Assets<crate::asset::SpineSkeletonAsset>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<SpineMaterial3d>>,
+    mut child_vis: Query<&mut Visibility>,
+) {
+    for (entity, mut sk) in &mut query {
+        let Some(skel_asset) = skeleton_assets.get(&sk.asset) else {
+            continue;
+        };
+        let Some(atlas) = atlases.get(&skel_asset.atlas) else {
+            continue;
+        };
+        let Some(state) = sk.state.as_mut() else {
+            continue;
+        };
+
+        let cmd_count = state.renderer.commands().len();
+        grow_child_buffers_3d(
+            &mut commands,
+            entity,
+            state,
+            cmd_count,
+            &mut meshes,
+            &mut materials,
+        );
+
+        for i in 0..cmd_count {
+            let cmd = &state.renderer.commands()[i];
+            let tex = atlas
+                .pages
+                .get(cmd.texture.0 as usize)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(mesh) = meshes.get_mut(&state.meshes[i]) {
+                write_mesh_from_command(mesh, cmd);
+            }
+            if let Some(mat) = materials.get_mut(&state.materials_3d[i]) {
+                mat.texture = tex;
+                mat.colors = colors_from_command(cmd);
+                mat.blend_mode = SpineBlendMode::from(cmd.blend_mode);
+            }
+            if let Ok(mut vis) = child_vis.get_mut(state.children[i]) {
+                *vis = Visibility::Visible;
+            }
+        }
+
         for &child in &state.children[cmd_count..] {
             if let Ok(mut vis) = child_vis.get_mut(child) {
                 *vis = Visibility::Hidden;
@@ -122,12 +182,12 @@ pub fn build_spine_meshes(
 }
 
 /// Ensure `state.meshes` / `state.materials` / `state.children` have at
-/// least `cmd_count` entries, spawning new child entities for any new
+/// least `cmd_count` entries, spawning new 2D child entities for any new
 /// slots. Existing slots are left alone.
-fn grow_child_buffers(
+fn grow_child_buffers_2d(
     commands: &mut Commands,
     parent: Entity,
-    state: &mut crate::components::SpineSkeletonState,
+    state: &mut SpineSkeletonState,
     cmd_count: usize,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<SpineMaterial>,
@@ -152,6 +212,37 @@ fn grow_child_buffers(
     }
 }
 
+/// 3D sibling of [`grow_child_buffers_2d`]. Spawns children with
+/// `(Mesh3d, MeshMaterial3d<SpineMaterial3d>)` and populates the
+/// `materials_3d` vec.
+fn grow_child_buffers_3d(
+    commands: &mut Commands,
+    parent: Entity,
+    state: &mut SpineSkeletonState,
+    cmd_count: usize,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<SpineMaterial3d>,
+) {
+    while state.meshes.len() < cmd_count {
+        let i = state.meshes.len();
+        let mesh_handle = meshes.add(empty_mesh());
+        let material_handle = materials.add(SpineMaterial3d::default());
+        let z = (i as f32) * Z_OFFSET_PER_COMMAND;
+        let child = commands
+            .spawn((
+                Mesh3d(mesh_handle.clone()),
+                MeshMaterial3d(material_handle.clone()),
+                Transform::from_xyz(0.0, 0.0, z),
+                Visibility::Hidden,
+                ChildOf(parent),
+            ))
+            .id();
+        state.meshes.push(mesh_handle);
+        state.materials_3d.push(material_handle);
+        state.children.push(child);
+    }
+}
+
 fn empty_mesh() -> Mesh {
     // Must stay in main world; `RENDER_WORLD` alone drops the mesh after
     // extract and the next frame's `insert_attribute` then panics.
@@ -159,6 +250,13 @@ fn empty_mesh() -> Mesh {
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     )
+}
+
+fn colors_from_command(cmd: &RenderCommand) -> SpineColors {
+    SpineColors {
+        light: unpack_argb(cmd.colors.first().copied().unwrap_or(0xffff_ffff)),
+        dark: unpack_argb(cmd.dark_colors.first().copied().unwrap_or(0xff00_0000)),
+    }
 }
 
 /// Convert a [`RenderCommand`]'s interleaved position/uv buffers + index

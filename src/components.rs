@@ -32,7 +32,27 @@ use dm_spine_runtime::render::SkeletonRenderer;
 use dm_spine_runtime::skeleton::{Physics, Skeleton, SkinNotFound};
 
 use crate::asset::SpineSkeletonAsset;
-use crate::material::SpineMaterial;
+use crate::material::{SpineMaterial, SpineMaterial3d};
+
+/// Render-mode marker: skeleton renders through the `Material2d` / sprite
+/// pipeline on the entity's `Camera2d`. Inserted automatically by
+/// [`crate::systems::ensure_spine_render_marker`] on any [`SpineSkeleton`]
+/// that doesn't already carry a marker, so existing 2D code keeps working
+/// without changes.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SpineRender2d;
+
+/// Render-mode marker: skeleton renders through the 3D `Material` pipeline
+/// on the entity's `Camera3d`. Insert alongside [`SpineSkeleton`] to opt
+/// into the 3D backend. Mutually exclusive with [`SpineRender2d`].
+///
+/// Positions come out of the runtime in the skeleton's local XY plane
+/// (z = 0); rotate / position the entity's parent `Transform` to place
+/// the rig in 3D space. Per-slot draw order is preserved via a small
+/// local-Z offset, with depth writes disabled so camera-distance sorting
+/// in the transparent pass does the heavy lifting.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SpineRender3d;
 
 /// Per-instance Spine skeleton. Owns a [`Handle<SpineSkeletonAsset>`] plus
 /// lazily-constructed runtime state ([`Skeleton`] + [`AnimationState`] +
@@ -90,9 +110,14 @@ pub struct SpineSkeletonState {
     /// with `materials` and `children`. Populated by
     /// [`crate::mesh::build_spine_meshes`].
     pub meshes: Vec<Handle<Mesh>>,
-    /// Material asset per `RenderCommand` slot. Index-parallel with
-    /// `meshes`.
+    /// 2D material asset per `RenderCommand` slot for skeletons tagged
+    /// with [`SpineRender2d`]. Index-parallel with `meshes`. Empty on
+    /// 3D-tagged skeletons.
     pub materials: Vec<Handle<SpineMaterial>>,
+    /// 3D material asset per `RenderCommand` slot for skeletons tagged
+    /// with [`SpineRender3d`]. Index-parallel with `meshes`. Empty on
+    /// 2D-tagged skeletons.
+    pub materials_3d: Vec<Handle<SpineMaterial3d>>,
     /// Child entity per `RenderCommand` slot. Index-parallel with
     /// `meshes`. Excess entities (after the command count shrinks) are
     /// hidden rather than despawned so re-growth reuses them.

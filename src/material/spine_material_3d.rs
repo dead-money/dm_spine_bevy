@@ -25,44 +25,46 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+//! 3D (`Material`) flavor of the Spine material. Spawned by
+//! [`crate::mesh::build_spine_meshes_3d`] for skeletons tagged with
+//! [`crate::components::SpineRender3d`]. The fragment math (tint-black over
+//! a PMA atlas sample) is identical to the 2D material; the differences
+//! are the trait impl, the WGSL imports, and the vertex-stage plumbing.
+//!
+//! Deliberately unlit: Spine's light/dark color channels already bake
+//! authored lighting, and atlas samples are premultiplied by their own
+//! alpha. Layering PBR lighting on top would double-count both.
+
 use bevy::asset::embedded_asset;
 use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
 use bevy::shader::ShaderRef;
-use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey};
 
 use crate::material::shared::{SpineBlendMode, SpineColors, SpineMaterialKey};
 
-/// 2D material emitted by [`crate::mesh`] for each batched `RenderCommand`
-/// on entities tagged with [`crate::components::SpineRender2d`]. Pairs an
-/// atlas-page texture with the slot's premultiplied colors and a blend
-/// mode.
+/// 3D material emitted by [`crate::mesh::build_spine_meshes_3d`] for each
+/// batched `RenderCommand` on entities tagged with
+/// [`crate::components::SpineRender3d`].
 ///
-/// `blend_mode` is promoted into [`SpineMaterialKey`] so the
-/// `Material2d` pipeline specializer caches one pipeline per mode (four
-/// permutations total).
+/// Mirrors [`crate::SpineMaterial`] at the bind-group level — same layout,
+/// same uniform, same texture slot, same specialization key — so the build
+/// system can share color/texture/blend update code across both backends.
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
 #[bind_group_data(SpineMaterialKey)]
-pub struct SpineMaterial {
-    /// Per-slot light + dark tint, shared across every vertex of one
-    /// command (the runtime's adjacency batcher only merges commands
-    /// with identical colors).
+pub struct SpineMaterial3d {
     #[uniform(0)]
     pub colors: SpineColors,
-    /// Atlas page the command samples from. Resolved by the mesh-build
-    /// system from `SpineAtlasAsset::pages` keyed by `RenderCommand::texture`.
     #[texture(1)]
     #[sampler(2)]
     pub texture: Handle<Image>,
-    /// Spine blend mode. Not a bind-group field — copied into
-    /// [`SpineMaterialKey`] for pipeline specialization.
     pub blend_mode: SpineBlendMode,
 }
 
-impl Default for SpineMaterial {
+impl Default for SpineMaterial3d {
     fn default() -> Self {
         Self {
             colors: SpineColors::default(),
@@ -72,17 +74,17 @@ impl Default for SpineMaterial {
     }
 }
 
-impl From<&SpineMaterial> for SpineMaterialKey {
-    fn from(m: &SpineMaterial) -> Self {
+impl From<&SpineMaterial3d> for SpineMaterialKey {
+    fn from(m: &SpineMaterial3d) -> Self {
         Self {
             blend_mode: m.blend_mode,
         }
     }
 }
 
-const SHADER_ASSET_PATH: &str = "embedded://dm_spine_bevy/material/spine.wgsl";
+const SHADER_ASSET_PATH: &str = "embedded://dm_spine_bevy/material/spine_3d.wgsl";
 
-impl Material2d for SpineMaterial {
+impl Material for SpineMaterial3d {
     fn vertex_shader() -> ShaderRef {
         SHADER_ASSET_PATH.into()
     }
@@ -91,14 +93,26 @@ impl Material2d for SpineMaterial {
         SHADER_ASSET_PATH.into()
     }
 
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    // Spine geometry is translucent / hand-authored; the shadow and depth
+    // prepasses would discard fragments we want rendered and sort poorly
+    // against the main transparent pass. Turn both off.
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
     }
 
     fn specialize(
+        _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
-        key: Material2dKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let blend = key.bind_group_data.blend_mode.blend_state();
         if let Some(fragment) = descriptor.fragment.as_mut()
@@ -106,15 +120,25 @@ impl Material2d for SpineMaterial {
         {
             target.blend = Some(blend);
         }
+        // Spine slot Z-offsets (see `Z_OFFSET_PER_COMMAND` in mesh.rs) are
+        // smaller than typical depth precision; let the transparent pass
+        // sort by camera distance and disable depth writes so slots layer
+        // correctly regardless of submission order.
+        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
+            depth_stencil.depth_write_enabled = false;
+        }
+        // Spine meshes are single-sided and can wind either way depending
+        // on skeleton flips, skin swaps, and bone chains crossing over
+        // themselves. The 2D (`Material2d`) pipeline doesn't cull; match
+        // that here so the rig stays visible from both sides as the
+        // camera orbits.
+        descriptor.primitive.cull_mode = None;
         Ok(())
     }
 }
 
-/// Register the 2D WGSL shader with Bevy's embedded asset source. Called by
-/// [`crate::SpinePlugin`] during `build`. Downstream, `Material2d::fragment_shader`
-/// returns the `embedded://...` path and the asset server resolves it
-/// lazily — so this registration doesn't require any render plugins to be
-/// installed yet.
-pub(crate) fn register_spine_shader(app: &mut App) {
-    embedded_asset!(app, "spine.wgsl");
+/// Register the 3D WGSL shader with Bevy's embedded asset source. Called by
+/// [`crate::SpinePlugin`] during `build`.
+pub(crate) fn register_spine_shader_3d(app: &mut App) {
+    embedded_asset!(app, "spine_3d.wgsl");
 }
